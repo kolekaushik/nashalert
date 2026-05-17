@@ -18,11 +18,12 @@
 # These are downloaded locally but never committed to Git.
 # See docs/DATA_SOURCES.md for how to obtain them.
 # ------------------------------------------------------------
-data/*
-!data/.gitkeep
+# Ignore all large data files at the data/ root
+data/*.csv
+data/*.json
+# But do NOT ignore the exploration folder — those outputs are committed
 !data/exploration/
-!data/exploration/*.csv
-!data/exploration/*.js
+!data/exploration/**
 
 
 # ------------------------------------------------------------

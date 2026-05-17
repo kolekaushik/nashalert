@@ -158,6 +158,8 @@ resolution_score = 1 - (avg_resolution_days / max_avg_resolution_days_city_wide)
 
 A higher resolution score indicates that complaints at this location have historically taken longer to resolve, which is an additional signal of systemic neglect. Resolution is given the lowest weight (10%) because resolution time data is inconsistently recorded in the Nashville 311 dataset — many complaints have null closed dates — and because slow resolution may reflect complaint complexity rather than neglect. It is included as a tiebreaker signal rather than a primary driver.
 
+**Defining "resolved" for resolution time calculation:** The Nashville 311 dataset contains 18 distinct status values with inconsistent casing and formatting — including `PENDING`, `In Progress`, `CityWorks In Progress`, and variants thereof. Rather than attempt to classify this taxonomy, the resolution time calculation uses a single unambiguous rule: a complaint is considered resolved only if its `status` field equals `"Closed"` **and** its `closed_date` is not null. All other rows — regardless of status label — are treated as unresolved and excluded from resolution time averaging. This rule is conservative: it will undercount resolved complaints, but it will not introduce spurious resolution times by inferring closure from ambiguous status strings.
+
 ### 4.5 Weight Justification
 
 The 40/30/20/10 weighting was arrived at by the following reasoning: the project's core claim is that recurrence matters more than any single complaint's characteristics, so frequency dominates. Recency is the second most important factor because a prioritization system that equally weights a 2018 complaint and a 2025 complaint would produce stale recommendations. Severity provides meaningful differentiation between location types but should not allow a single high-severity complaint to override years of moderate-severity recurrence. Resolution time is a useful but unreliable signal and is therefore given a minimal weight.
@@ -178,13 +180,27 @@ Fewer than 0.05% of complaints in infrastructure-relevant categories have null o
 
 ### 5.3 Handling Malformed Entries
 
-Records where the Request Type field contained a resolution status rather than a complaint category were excluded as malformed entries, representing a known data quality limitation of the Nashville 311 system.
+Records where the Request Type field contained a resolution status rather than a complaint category were excluded as malformed entries, representing a known data quality limitation of the Nashville 311 system. The most common such value — `Resolved by hubNashville on First Call` — accounts for **604,925 rows**, nearly a third of the full 1,982,953-row dataset. This is a substantially larger proportion than anticipated and suggests that the Nashville 311 system's data export conflates resolution outcomes with complaint categories at significant scale. These rows carry no complaint type, subtype, or infrastructure signal and are excluded entirely from ingestion. They are counted separately in the ingestion summary log so the exclusion is transparent and auditable.
 
 ### 5.4 Missing Coordinate Handling
 
 Records missing latitude or longitude values are skipped during ingestion and logged as skipped rows with the reason `missing_coordinates`. These records cannot be placed on a map and are therefore unusable for geospatial analysis. They are not inserted into the database.
 
-### 5.5 Spatial Clustering Radius
+### 5.5 CSV Column Name Discrepancies
+
+The Nashville Metro Open Data Portal's CSV export uses column names that differ in minor but meaningful ways from the field names documented in the dataset's data dictionary and from what one would expect based on the portal's web interface. These discrepancies were discovered during ingestion and are documented here for reproducibility.
+
+**Subtype field:** The export header is `Subrequest Type`, not `Subtype`. Any script that reads this column using the name `Subtype` will silently read null values for every row, causing all complaints to be stored with a subtype of `(none)` regardless of the actual filed subtype. The ingestion pipeline uses `Subrequest Type`.
+
+**Additional Subtype field:** Similarly, the header is `Additional Subrequest Type`, not `Additional Subtype`.
+
+**Opened date field:** The export header is `Date /Time Opened` — note the space between `Date` and `/Time`. This appears to be a typographical inconsistency in the portal's export formatter. A script using `Date/Time Opened` (no space) will silently read null dates for all rows. The ingestion pipeline uses `Date /Time Opened` verbatim.
+
+**Address field encoding:** Some address values contain DMS (degree-minute-second) coordinate strings such as `36°02'30.5"`, where the `"` character is the arc-seconds symbol. Standard CSV parsers that treat `"` as a quoting character will interpret this as an unclosed quote and abort parsing. The ingestion pipeline uses the `relax_quotes` option to handle this without discarding the affected rows.
+
+These discrepancies do not affect the scientific validity of the analysis but are worth documenting because they would cause silent data errors in any reimplementation that assumes standard column names. The Nashville open data portal does not appear to version its export schema, so future exports should be validated against these headers before ingestion.
+
+### 5.6 Spatial Clustering Radius
 
 Nearby complaints are grouped within a 200-meter radius for scoring purposes. This radius was chosen to approximate a typical city block in Nashville's street grid while being small enough to distinguish between adjacent intersections. Complaints more than 200 meters apart are treated as belonging to different locations even if they are in the same neighborhood. This radius is a configurable constant and can be adjusted for sensitivity analysis.
 
@@ -218,6 +234,8 @@ This analysis has several important limitations that must be acknowledged:
 **Census tract boundaries do not correspond to infrastructure maintenance districts.** Nashville's public works maintenance is organized by council district, not census tract. The use of census tracts is driven by the availability of income data at that geographic level, not by operational relevance to maintenance decisions.
 
 **The dataset spans 2017–present.** Infrastructure conditions and demographic compositions of Nashville neighborhoods have changed over this period, particularly given Nashville's significant growth. The equity analysis treats the full period as a single snapshot, which may obscure temporal dynamics.
+
+**District 19 is a significant outlier.** With 40,910 complaints, District 19 has nearly three times the complaint volume of the next highest district (District 5 at 13,848). This is not a data artifact — District 19 covers a large geographic area and its concentration will appear prominently in heatmap visualizations. Any district-level equity comparison must account for this disparity, as raw complaint counts and recurrence scores for District 19 will not be directly comparable to those of geographically smaller districts. Census tract-level normalization by resident population partially addresses this, but the geographic scale difference remains a confound.
 
 These limitations do not invalidate the analysis — they define its scope. The findings should be interpreted as evidence warranting further investigation, not as definitive proof of inequity.
 
