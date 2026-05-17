@@ -11,7 +11,7 @@ should be able to re-obtain every dataset described here.
 
 **Full name:** Metro Nashville hubNashville 311 Service Requests
 
-**URL:** https://data.nashville.gov/d/7qhx-rexh
+**URL:** https://data.nashville.gov/datasets/9fe11d5a413240ed968f5c8d71877944_0
 
 **Format:** CSV (downloadable directly from the Nashville Metro Open Data Portal; also accessible via Socrata SODA API)
 
@@ -26,16 +26,16 @@ should be able to re-obtain every dataset described here.
 Only infrastructure-relevant request types are ingested (see `backend/constants/categories.js` and `docs/METHODOLOGY.md` Section 1).
 
 **How to obtain:**
-1. Navigate to https://data.nashville.gov/d/7qhx-rexh
+1. Navigate to https://data.nashville.gov/datasets/9fe11d5a413240ed968f5c8d71877944_0
 2. Click "Export" > "CSV"
 3. Save the file to `data/311_complaints.csv`
 4. Run `node backend/scripts/ingest-311-data.js`
 
-**Volume:** Approximately 500,000+ rows as of May 2026. The full CSV is ~150 MB; it is gitignored and must be downloaded locally before running the ingestion script.
+**Volume:** Approximately 1,983,294+ rows as of May 2026. The full CSV is ~535 MB; it is gitignored and must be downloaded locally before running the ingestion script.
 
 **Known limitations and caveats:**
 - **Reporting bias:** 311 complaint volume reflects who calls, not necessarily where infrastructure failures are worst. Lower-income neighborhoods may be systematically underrepresented. This is one of the equity questions the project is designed to investigate.
-- **Resolution status misrecorded as request type:** A small number of rows have "Resolved by hubNashville on First Call" recorded in the Request Type field rather than the actual complaint category. These are filtered out during ingestion.
+- **Resolution status misrecorded as request type:** A large number of rows have "Resolved by hubNashville on First Call" recorded in the Request Type field rather than the actual complaint category. These are filtered out during ingestion.
 - **Duplicate request type spelling:** `Public Works WO` and `Public_Works_WO` (with an underscore) refer to the same category. Normalized to `Public Works WO` during ingestion. Affects approximately 2,902 records.
 - **Missing coordinates:** A small number of records are missing latitude or longitude values. These cannot be placed on a map and are excluded from ingestion.
 - **Missing subtypes:** Fewer than 0.05% of infrastructure-relevant rows have null or empty Subtype values. These are stored with the sentinel value `(none)` and receive a default severity score of 0.3.
