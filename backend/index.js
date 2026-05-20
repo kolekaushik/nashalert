@@ -5,6 +5,8 @@ require('dotenv').config();
 const express = require('express');
 const errorHandler = require('./middleware/error-handler');
 const complaintsRouter = require('./routes/complaints');
+const reportsRouter    = require('./routes/reports');
+const heatmapRouter    = require('./routes/heatmap');
 
 const app = express();
 
@@ -19,6 +21,8 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/complaints', complaintsRouter);
+app.use('/api/reports',    reportsRouter);
+app.use('/api/heatmap',    heatmapRouter);
 
 app.use(errorHandler);
 

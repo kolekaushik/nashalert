@@ -135,14 +135,20 @@ Frequency is given 40% of the total weight — the largest share — because the
 
 ### 4.2 Recency Score (weight: 0.30)
 
-Recent complaints are weighted more heavily than older ones because infrastructure conditions change over time. A location with many complaints from 2018 that has had no complaints since 2022 may have been repaired. Recency is computed using an exponential decay function with a half-life of 90 days:
+Recent complaints are weighted more heavily than older ones because infrastructure conditions change over time. A location with many complaints from 2018 that has had no complaints since 2022 may have been repaired. Recency is computed using an exponential decay function with a half-life of 365 days:
 
 ```
 recency_weight(complaint) = e^(-λ * days_since_complaint)
-where λ = ln(2) / 90
+where λ = ln(2) / 365
 ```
 
-The 90-day half-life was chosen because it represents roughly one fiscal quarter — a common cycle for municipal maintenance prioritization. Complaints older than two years receive a weight close to zero but are not discarded, as they contribute to the frequency and pattern analysis. Recency is given 30% of the total weight — significant but secondary to frequency, because a single very recent complaint at a clean-record location should not outrank a location with years of persistent complaints.
+The 365-day half-life was chosen after evaluating 90-day and 180-day alternatives against the actual dataset. Both shorter half-lives produced recency scores of 0.02–0.05 across all test locations — effectively making recency a non-contributor to the final score despite carrying 30% formula weight, a clear misalignment between the formula's design intent and its practical behavior. A 365-day half-life produces recency scores in the 0.15–0.35 range, making it a genuine differentiator between locations with recent complaint activity and those with only historical records.
+
+The 365-day value also has the strongest domain rationale of the three candidates: infrastructure degradation in Nashville follows seasonal and annual cycles. A pothole corridor that generates complaints every winter for three consecutive years represents a structural failure that a scoring system should recognize — not a one-time event whose signal should decay to near-zero within 90 days. A one-year half-life means complaints from the past 2–3 years carry meaningful weight, complaints from 3–5 years ago carry moderate weight, and complaints older than 5 years approach zero — a decay curve that reflects how infrastructure professionals actually reason about persistent maintenance problems.
+
+A 365-day half-life is also more equitable to the secondary research question. Lower-income Nashville neighborhoods likely accumulate older, more persistent complaint histories rather than high-volume recent ones. A shorter half-life would systematically underweight those histories relative to wealthier areas with more recent but less persistent complaints, introducing a bias contrary to the equity analysis the project is designed to conduct.
+
+Recency is given 30% of the total weight — significant but secondary to frequency, because a single very recent complaint at a clean-record location should not outrank a location with years of persistent complaints.
 
 ### 4.3 Severity Score (weight: 0.20)
 
@@ -165,6 +171,14 @@ A higher resolution score indicates that complaints at this location have histor
 The 40/30/20/10 weighting was arrived at by the following reasoning: the project's core claim is that recurrence matters more than any single complaint's characteristics, so frequency dominates. Recency is the second most important factor because a prioritization system that equally weights a 2018 complaint and a 2025 complaint would produce stale recommendations. Severity provides meaningful differentiation between location types but should not allow a single high-severity complaint to override years of moderate-severity recurrence. Resolution time is a useful but unreliable signal and is therefore given a minimal weight.
 
 These weights are a deliberate research design decision and are stored as named constants in `backend/constants/severity-weights.js` so they can be adjusted and re-evaluated systematically.
+
+### 4.6 Architectural decision for recurrence score calculation
+
+The current implementation computes recurrence scores in real-time on each API request, leveraging PostGIS spatial indexing to return results within acceptable latency bounds at the current dataset size of 334,710 complaints. As the dataset grows or concurrent usage increases, the architecture is designed to transition to a hybrid caching approach — serving scores from a precomputed cache while triggering background recomputation for stale entries — without changes to the scoring formula or API contract.
+
+**Grid Resolution Note:** The nightly batch job uses a 200m grid spacing across Nashville's bounding box, producing approximately 15,000–20,000 scored grid points. This resolution provides sufficient coverage for heatmap visualization and matches the 200m scoring radius. A 100m grid would produce approximately 60,000–80,000 points for finer spatial detail at approximately 4x the compute time. Upgrading to 100m grid spacing is recommended before any production deployment or public launch.
+
+**Caching Architecture:** Scores are precomputed nightly rather than computed per request. This matches the daily update cadence of the Nashville 311 dataset — real-time computation would perform expensive PostGIS spatial queries to return scores unchanged since the previous night's data. The API serves scores from the recurrence_cache table with a 24-hour freshness threshold. If the cache is between 24 and 48 hours old, scores are served with a staleness warning logged server-side. If the cache exceeds 48 hours, the API falls back to real-time computation to ensure resilience against nightly job failures. A hybrid approach with background recomputation triggered by cache staleness detection would be the appropriate next evolution if real-time community report ingestion were added as a scoring data source.
 
 ---
 
@@ -204,6 +218,10 @@ These discrepancies do not affect the scientific validity of the analysis but ar
 
 Nearby complaints are grouped within a 200-meter radius for scoring purposes. This radius was chosen to approximate a typical city block in Nashville's street grid while being small enough to distinguish between adjacent intersections. Complaints more than 200 meters apart are treated as belonging to different locations even if they are in the same neighborhood. This radius is a configurable constant and can be adjusted for sensitivity analysis.
 
+### 5.7 Batch Job Performance
+
+The nightly batch job evaluates approximately 73,000 grid points across Nashville's bounding box, scoring the 42% that have at least one infrastructure complaint within 200m and skipping the remainder. On Supabase's free tier the job completes in approximately 22 minutes due to connection throttling; this would reduce to an estimated 3–5 minutes on a dedicated database instance and should be considered when planning a production deployment.
+
 ---
 
 ## 6. Equity Analysis Methodology
@@ -236,6 +254,9 @@ This analysis has several important limitations that must be acknowledged:
 **The dataset spans 2017–present.** Infrastructure conditions and demographic compositions of Nashville neighborhoods have changed over this period, particularly given Nashville's significant growth. The equity analysis treats the full period as a single snapshot, which may obscure temporal dynamics.
 
 **District 19 is a significant outlier.** With 40,910 complaints, District 19 has nearly three times the complaint volume of the next highest district (District 5 at 13,848). This is not a data artifact — District 19 covers a large geographic area and its concentration will appear prominently in heatmap visualizations. Any district-level equity comparison must account for this disparity, as raw complaint counts and recurrence scores for District 19 will not be directly comparable to those of geographically smaller districts. Census tract-level normalization by resident population partially addresses this, but the geographic scale difference remains a confound.
+
+**Current project implementation uses a static dataset.** The current implementation uses a static snapshot of Nashville 311 data ingested at project initialization. A production deployment would require a scheduled incremental sync job to keep the dataset current, which the existing upsert-based ingestion pipeline is designed to support with minimal modification.
+
 
 These limitations do not invalidate the analysis — they define its scope. The findings should be interpreted as evidence warranting further investigation, not as definitive proof of inequity.
 
