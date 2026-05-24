@@ -156,14 +156,15 @@ router.get('/stats', async (req, res, next) => {
       return res.json({ success: true, data: statsCache.data });
     }
 
-    const [totalResult, byTypeResult, byStatusResult, byDistrictResult, dateRangeResult] =
-      await Promise.all([
-        supabase.rpc('get_complaint_total_count'),
-        supabase.rpc('get_complaints_by_request_type'),
-        supabase.rpc('get_complaints_by_status'),
-        supabase.rpc('get_complaints_by_district'),
-        supabase.rpc('get_complaints_date_range'),
-      ]);
+    // Run RPCs sequentially rather than with Promise.all to avoid hammering
+    // Supabase free tier's connection pool simultaneously. The 1-hour in-memory
+    // cache means this sequential path runs at most once per hour per server
+    // process — the latency cost is paid once, not on every request.
+    const totalResult      = await supabase.rpc('get_complaint_total_count');
+    const byTypeResult     = await supabase.rpc('get_complaints_by_request_type');
+    const byStatusResult   = await supabase.rpc('get_complaints_by_status');
+    const byDistrictResult = await supabase.rpc('get_complaints_by_district');
+    const dateRangeResult  = await supabase.rpc('get_complaints_date_range');
 
     if (totalResult.error) return next(totalResult.error);
     if (byTypeResult.error) return next(byTypeResult.error);
@@ -393,6 +394,169 @@ router.get('/temporal', async (req, res, next) => {
         location: { lat: latNum, lng: lngNum, radius_meters: radiusMeters },
         temporal_distribution,
         seasonal_pattern,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------
+// GET /api/complaints/priority-queue
+// ---------------------------------------------------------------
+// Returns ranked cache points for the priority queue panel.
+// Excludes the sentinel metadata row (latitude = 0) and applies
+// optional filters for district, score threshold, and request type.
+//
+// District filtering uses a two-stage approach:
+//   Stage 1: fetch a large candidate pool from recurrence_cache
+//            (1,000 points when district-filtering; `limit` otherwise)
+//   Stage 2: for each candidate, check whether any complaint in the
+//            target district exists within 1,000m using the
+//            complaints_within_radius RPC.
+//
+// The district-assignment radius is intentionally wider (1,000m) than
+// the scoring radius (200m). Scoring clusters are tight by design;
+// district assignment is a geographic question — "which administrative
+// area does this cache point serve?" — and outer Nashville districts
+// have lower complaint density, so the nearest district complaint
+// may be 300–800m from the nearest grid point.
+//
+// Query params:
+//   district      - council district number, cast to string (optional)
+//   min_score     - minimum recurrence_score, default 0 (optional)
+//   request_type  - dominant_request_type filter (optional)
+//   limit         - max results, default 50, max 200 (optional)
+// ---------------------------------------------------------------
+
+// Radius used only for district assignment, not for scoring.
+// Wide enough to catch sparse outer-district cache points.
+const DISTRICT_FILTER_RADIUS_M = 1000;
+
+// When district filtering is active we pull a larger candidate pool first
+// so outer-district points (which may rank below the top N globally)
+// are included in the spatial check before we apply the user's limit.
+const DISTRICT_CANDIDATE_POOL = 1000;
+
+router.get('/priority-queue', async (req, res, next) => {
+  try {
+    const minScore   = parseFloat(req.query.min_score) || 0;
+    const limit      = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    // Explicit String() cast ensures numeric district values like "17" from
+    // query params compare correctly against the text council_district column.
+    const district   = req.query.district ? String(req.query.district) : null;
+    const requestType = req.query.request_type ? String(req.query.request_type) : null;
+
+    if (isNaN(minScore) || minScore < 0 || minScore > 1) {
+      return res.status(400).json({ success: false, error: 'min_score must be between 0 and 1' });
+    }
+
+    // When district filtering is active, pull a larger candidate pool so that
+    // lower-scoring outer-district cache points are included before the spatial
+    // check narrows the set. Without this, top-N globally are all downtown
+    // hotspots and outer districts appear to have zero matching cache points.
+    const candidateLimit = district ? DISTRICT_CANDIDATE_POOL : limit;
+
+    let query = supabase
+      .from('recurrence_cache')
+      .select('latitude, lng:longitude, recurrence_score, complaint_count, dominant_request_type, dominant_subtype, seasonal_pattern')
+      .neq('latitude', 0)            // exclude MAX_COMPLAINT_COUNT sentinel row
+      .gte('recurrence_score', minScore)
+      .order('recurrence_score', { ascending: false })
+      .limit(candidateLimit);
+
+    if (requestType) {
+      query = query.eq('dominant_request_type', requestType);
+    }
+
+    const { data, error } = await query;
+    if (error) return next(error);
+
+    let items = (data || []).map((row) => ({
+      lat:                   row.latitude,
+      lng:                   row.lng,
+      recurrence_score:      row.recurrence_score,
+      complaint_count:       row.complaint_count,
+      dominant_request_type: row.dominant_request_type,
+      dominant_subtype:      row.dominant_subtype,
+      seasonal_pattern:      row.seasonal_pattern,
+    }));
+
+    // District spatial filter — runs only when district param is provided.
+    //
+    // Previous approach: 1,000 parallel complaints_within_radius RPC calls (one per
+    // candidate cache point). This saturated the Supabase free-tier connection pool,
+    // causing silent null returns that either dropped all results (fail-closed) or
+    // included everything (fail-open), both wrong.
+    //
+    // Current approach: ONE query to fetch the district's complaint coordinates, then
+    // pure-JavaScript haversine distance checks — no parallel RPCs, no connection pool
+    // pressure, deterministic results regardless of Supabase load.
+    //
+    // Membership criterion: a cache point must have ≥ 3 district complaints within
+    // DISTRICT_FILTER_RADIUS_M. A single nearby complaint is insufficient — boundary
+    // points can pick up one stray complaint from an adjacent district.
+    if (district) {
+      // Fetch up to 5,000 complaint coordinates for the target district.
+      // 5,000 covers every Nashville district with headroom; the query is indexed
+      // on council_district and returns only two lightweight numeric columns.
+      const { data: districtCoords, error: dcError } = await supabase
+        .from('complaints')
+        .select('latitude, longitude')
+        .eq('council_district', district)
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
+        .limit(5000);
+
+      if (dcError) return next(dcError);
+
+      const coords = districtCoords || [];
+
+      // Haversine distance in metres between two WGS-84 coordinates.
+      function haversineM(lat1, lng1, lat2, lng2) {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * (Math.PI / 180);
+        const dLng = (lng2 - lng1) * (Math.PI / 180);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1 * (Math.PI / 180)) *
+          Math.cos(lat2 * (Math.PI / 180)) *
+          Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+
+      // Filter: keep cache points that have ≥ 3 district complaints within the
+      // assignment radius. Early-exit at count = 3 keeps this O(candidates × coords)
+      // loop fast in practice — most genuine district members hit 3 quickly.
+      const beforeCount = items.length;
+      items = items.filter((item) => {
+        let count = 0;
+        for (const c of coords) {
+          if (haversineM(item.lat, item.lng, c.latitude, c.longitude) <= DISTRICT_FILTER_RADIUS_M) {
+            count++;
+            if (count >= 3) return true;
+          }
+        }
+        return false;
+      }).slice(0, limit);
+
+      console.log(
+        `[PriorityQueue] district filter applied — ` +
+        `district="${district}", district complaints fetched: ${coords.length}, ` +
+        `candidates checked: ${beforeCount}, matched: ${items.length}`
+      );
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        items,
+        count: items.length,
+        filters_applied: {
+          district:     district ?? null,
+          min_score:    minScore,
+          request_type: requestType ?? null,
+        },
       },
     });
   } catch (err) {

@@ -196,7 +196,8 @@ async function getCachedScoresInBounds(swLat, swLng, neLat, neLng) {
       .lte('latitude', neLat)
       .gte('longitude', swLng)
       .lte('longitude', neLng)
-      .neq('latitude', 0); // exclude sentinel metadata rows
+      .neq('latitude', 0)   // exclude sentinel metadata rows
+      .limit(50000);        // Nashville has ~30,979 scored points; 50k gives headroom for dataset growth
 
     if (error) {
       console.error('[Cache] getCachedScoresInBounds error:', error.message);

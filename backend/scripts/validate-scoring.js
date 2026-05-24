@@ -12,6 +12,17 @@
  * Run with: node backend/scripts/validate-scoring.js
  */
 
+/**
+ * IMPORTANT: Always recompute the cache before running this script if any
+ * of the following have changed since the last compute-scores.js run:
+ *   - RECENCY_HALF_LIFE_DAYS or any constant in scoring.js
+ *   - Severity weights in constants/severity-weights.js
+ *   - generateHistoricalContext logic
+ *   - The scoring formula weights
+ * Run: DELETE FROM recurrence_cache; then node scripts/compute-scores.js
+ * A critically stale cache will serve outdated context strings and scores.
+ */
+
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const { supabase } = require('../services/supabase');
