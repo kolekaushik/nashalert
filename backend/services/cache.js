@@ -28,6 +28,10 @@ const { supabase } = require('./supabase');
 const CACHE_STALE_HOURS    = 24;
 const CACHE_CRITICAL_HOURS = 48;
 
+// Set BYPASS_CACHE_STALENESS=true in .env to always serve from cache regardless
+// of age — useful for local screenshot/demo runs when data is stale but valid.
+const BYPASS_CACHE_STALENESS = process.env.BYPASS_CACHE_STALENESS === 'true';
+
 // ---------------------------------------------------------------
 // Exported functions
 // ---------------------------------------------------------------
@@ -61,10 +65,10 @@ async function getCacheStatus() {
 
     if (error || !data || !data.last_computed) {
       return {
-        isStale:          true,
-        isCriticallyStale: true,
-        ageHours:         Infinity,
-        lastComputed:     null,
+        isStale:           !BYPASS_CACHE_STALENESS,
+        isCriticallyStale: !BYPASS_CACHE_STALENESS,
+        ageHours:          Infinity,
+        lastComputed:      null,
       };
     }
 
@@ -72,20 +76,20 @@ async function getCacheStatus() {
     const ageHours = ageMs / (1000 * 60 * 60);
 
     return {
-      isStale:          ageHours > CACHE_STALE_HOURS,
-      isCriticallyStale: ageHours > CACHE_CRITICAL_HOURS,
-      ageHours:         Math.round(ageHours * 10) / 10,
-      lastComputed:     data.last_computed,
+      isStale:           !BYPASS_CACHE_STALENESS && ageHours > CACHE_STALE_HOURS,
+      isCriticallyStale: !BYPASS_CACHE_STALENESS && ageHours > CACHE_CRITICAL_HOURS,
+      ageHours:          Math.round(ageHours * 10) / 10,
+      lastComputed:      data.last_computed,
     };
   } catch (err) {
     // If the table doesn't exist yet or the query fails, treat as critically stale
     // so the API falls back to real-time rather than returning incorrect data.
     console.error('[Cache] getCacheStatus error:', err.message);
     return {
-      isStale:          true,
-      isCriticallyStale: true,
-      ageHours:         Infinity,
-      lastComputed:     null,
+      isStale:           !BYPASS_CACHE_STALENESS,
+      isCriticallyStale: !BYPASS_CACHE_STALENESS,
+      ageHours:          Infinity,
+      lastComputed:      null,
     };
   }
 }
@@ -135,6 +139,12 @@ async function getMaxComplaintCount() {
  * Returns null if:
  *   - No cache entry exists within 200m of the coordinates
  *   - The RPC function fails (caller should fall back to real-time)
+ *
+ * Phase 2.4 note: confidence_factor and raw_score are returned automatically
+ * once update-schema-phase24.sql has been applied and the batch job re-run.
+ * The RPC function (defined in update-schema-phase2.sql) returns the full row
+ * from recurrence_cache, so new columns are included without requiring a
+ * separate SQL migration for the function itself.
  *
  * @param {number} lat
  * @param {number} lng
@@ -190,7 +200,7 @@ async function getCachedScoresInBounds(swLat, swLng, neLat, neLng) {
     const { data, error } = await supabase
       .from('recurrence_cache')
       .select(
-        'latitude, longitude, recurrence_score, complaint_count, dominant_request_type, seasonal_pattern'
+        'latitude, longitude, recurrence_score, raw_score, confidence_factor, complaint_count, dominant_request_type, seasonal_pattern'
       )
       .gte('latitude', swLat)
       .lte('latitude', neLat)

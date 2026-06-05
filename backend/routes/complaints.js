@@ -423,10 +423,13 @@ router.get('/temporal', async (req, res, next) => {
 // may be 300–800m from the nearest grid point.
 //
 // Query params:
-//   district      - council district number, cast to string (optional)
-//   min_score     - minimum recurrence_score, default 0 (optional)
-//   request_type  - dominant_request_type filter (optional)
-//   limit         - max results, default 50, max 200 (optional)
+//   district        - council district number, cast to string (optional)
+//   min_score       - minimum recurrence_score, default 0 (optional)
+//   min_confidence  - minimum confidence_factor, default 0.0 (optional)
+//                     Use min_confidence=1.0 to see only fully-corroborated
+//                     locations (5+ complaints, no confidence discount applied)
+//   request_type    - dominant_request_type filter (optional)
+//   limit           - max results, default 50, max 200 (optional)
 // ---------------------------------------------------------------
 
 // Radius used only for district assignment, not for scoring.
@@ -440,15 +443,19 @@ const DISTRICT_CANDIDATE_POOL = 1000;
 
 router.get('/priority-queue', async (req, res, next) => {
   try {
-    const minScore   = parseFloat(req.query.min_score) || 0;
-    const limit      = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const minScore      = parseFloat(req.query.min_score) || 0;
+    const minConfidence = parseFloat(req.query.min_confidence) || 0.0;
+    const limit         = Math.min(parseInt(req.query.limit, 10) || 50, 200);
     // Explicit String() cast ensures numeric district values like "17" from
     // query params compare correctly against the text council_district column.
-    const district   = req.query.district ? String(req.query.district) : null;
+    const district    = req.query.district ? String(req.query.district) : null;
     const requestType = req.query.request_type ? String(req.query.request_type) : null;
 
     if (isNaN(minScore) || minScore < 0 || minScore > 1) {
       return res.status(400).json({ success: false, error: 'min_score must be between 0 and 1' });
+    }
+    if (isNaN(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+      return res.status(400).json({ success: false, error: 'min_confidence must be between 0 and 1' });
     }
 
     // When district filtering is active, pull a larger candidate pool so that
@@ -459,11 +466,15 @@ router.get('/priority-queue', async (req, res, next) => {
 
     let query = supabase
       .from('recurrence_cache')
-      .select('latitude, lng:longitude, recurrence_score, complaint_count, dominant_request_type, dominant_subtype, seasonal_pattern')
+      .select('latitude, lng:longitude, recurrence_score, raw_score, confidence_factor, complaint_count, dominant_request_type, dominant_subtype, seasonal_pattern')
       .neq('latitude', 0)            // exclude MAX_COMPLAINT_COUNT sentinel row
       .gte('recurrence_score', minScore)
       .order('recurrence_score', { ascending: false })
       .limit(candidateLimit);
+
+    if (minConfidence > 0) {
+      query = query.gte('confidence_factor', minConfidence);
+    }
 
     if (requestType) {
       query = query.eq('dominant_request_type', requestType);
@@ -476,6 +487,8 @@ router.get('/priority-queue', async (req, res, next) => {
       lat:                   row.latitude,
       lng:                   row.lng,
       recurrence_score:      row.recurrence_score,
+      raw_score:             row.raw_score,
+      confidence_factor:     row.confidence_factor,
       complaint_count:       row.complaint_count,
       dominant_request_type: row.dominant_request_type,
       dominant_subtype:      row.dominant_subtype,
@@ -553,9 +566,10 @@ router.get('/priority-queue', async (req, res, next) => {
         items,
         count: items.length,
         filters_applied: {
-          district:     district ?? null,
-          min_score:    minScore,
-          request_type: requestType ?? null,
+          district:        district ?? null,
+          min_score:       minScore,
+          min_confidence:  minConfidence,
+          request_type:    requestType ?? null,
         },
       },
     });

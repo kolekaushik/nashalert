@@ -178,6 +178,26 @@ These weights are a deliberate research design decision and are stored as named 
 
 **Caching Architecture:** Scores are precomputed nightly rather than computed per request. This matches the daily update cadence of the Nashville 311 dataset — real-time computation would perform expensive PostGIS spatial queries to return scores unchanged since the previous night's data. The API serves scores from the recurrence_cache table with a 24-hour freshness threshold. If the cache is between 24 and 48 hours old, scores are served with a staleness warning logged server-side. If the cache exceeds 48 hours, the API falls back to real-time computation to ensure resilience against nightly job failures. A hybrid approach with background recomputation triggered by cache staleness detection would be the appropriate next evolution if real-time community report ingestion were added as a scoring data source.
 
+### 4.7 Confidence Weighting
+
+A confidence factor is applied as a final multiplier to the composite recurrence score to reflect statistical reliability based on complaint count. The formula is `confidence_factor = min(1.0, complaint_count / 5)`, producing multipliers of 0.20 for a single complaint, 0.60 for three complaints, and 1.0 (no penalty) for five or more complaints.
+
+The motivation for this adjustment is a discovered behavior during baseline comparison analysis: single high-severity complaints at sparse outer Nashville grid points (predominantly Electric & Water General subtypes including sinkholes and water main failures) were producing composite recurrence scores of 0.50–0.52, comparable to locations with thousands of corroborated complaints in the urban core. This behavior reflects a genuine tension in composite scoring: severity weights correctly identify acute safety hazards, but a single isolated report at a geographic fringe provides insufficient statistical evidence to treat a location with the same confidence as one with years of complaint history.
+
+The confidence factor does not reduce the severity weights assigned to critical complaint types — a sinkhole remains severity 1.0. Rather, it requires a minimum level of corroboration before a location's score is treated as fully reliable. A sinkhole with five or more corroborating reports at a location retains its full score. This distinction between severity (how serious is this complaint type?) and confidence (how certain are we this location has a real problem?) is a deliberate design choice and a candidate for further methodological refinement in future work.
+
+The pre-confidence composite score is preserved in the `raw_score` field of the `recurrence_cache` table and all API responses. This allows direct comparison of pre- and post-confidence rankings as a sensitivity analysis, and ensures the modification is fully transparent and reversible. The `CONFIDENCE_THRESHOLD_COMPLAINTS = 5` constant is defined in `backend/services/scoring.js` so the threshold can be adjusted systematically. The nightly batch job summary log reports the count of confidence-discounted grid points (those with `complaint_count < 5`) to make the practical scope of the modifier observable.
+
+### 4.8 Baseline Comparison and Score Distribution
+
+A comparison of Nashville's top 20 locations by raw complaint volume versus recurrence score reveals meaningful divergence beginning at rank 10. The top nine locations are identical across both rankings — high-density Broadway corridor grid points with 2,700–5,547 complaints, all Streets, Roads & Sidewalks dominant, concentrated in a tight geographic cluster in downtown Nashville. This convergence at the top is expected: locations with both extreme complaint volume and recent activity naturally dominate both rankings.
+
+Ranks 10–20 by recurrence score, however, include outer Nashville locations with 5–24 complaints — predominantly Electric & Water General types such as water outages, flooding issues, drainage failures, and utility hazards — distributed across southwest, northwest, and north Nashville neighborhoods. These locations would be undetectable in a complaint-volume ranking, buried among thousands of lower-priority entries. The recurrence scoring engine surfaces them because their complaints carry high severity weights, are recent, and remain unresolved — a combination of signals that raw complaint count cannot capture.
+
+This divergence is the core empirical justification for the scoring methodology: locations with persistent high-severity utility failures in outer Nashville are systematically underrepresented in raw complaint volume but correctly elevated by the recurrence scoring engine. A city planner using naive complaint-count ranking would never examine a location with 8 or 23 complaints. The recurrence score says they should.
+
+Recurrence scores across Nashville's 30,979 scored grid points range from approximately 0.02 to 0.62, with the majority of locations falling in the 0.15–0.35 range. This compressed distribution reflects the genuine geographic concentration of infrastructure stress in Nashville's urban core rather than a scoring artifact. Scores should be interpreted relative to each other rather than against an absolute scale; district-level filtering in the priority queue is recommended for identifying high-priority locations within specific neighborhoods.
+
 ---
 
 ## 5. Data Quality Decisions
@@ -266,7 +286,7 @@ These limitations do not invalidate the analysis — they define its scope. The 
 
 This project does not claim to provide a production-ready infrastructure management system for the City of Nashville. It does not claim that the severity weights assigned in Section 3 are objectively correct — they represent one reasonable operationalization of infrastructure severity informed by civil engineering principles and are explicitly documented so they can be critiqued and revised. It does not claim that the recurrence scoring formula in Section 4 is optimal — the weights were derived through principled reasoning rather than empirical calibration against ground-truth maintenance outcomes, which would require data not available in public datasets.
 
-What this project does claim is that the methodology is transparent, reproducible, and grounded in a defensible research rationale; that it produces meaningfully different prioritization outputs than naive complaint-count ranking; and that it provides a tractable empirical framework for asking the equity question at the center of this project.
+What this project does claim is that the methodology is transparent, reproducible, and grounded in a defensible research rationale; that it produces meaningfully different prioritization outputs than naive complaint-count ranking — demonstrated empirically by a baseline comparison showing that ranks 10–20 by recurrence score include outer Nashville utility infrastructure locations with 5–24 complaints that would be invisible in a volume-based ranking; and that it provides a tractable empirical framework for asking the equity question at the center of this project.
 
 ---
 

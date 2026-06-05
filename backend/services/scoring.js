@@ -49,6 +49,16 @@ const DEFAULT_RESOLUTION_SCORE = 0.5;
 // account for more than 2 out of every 5 complaints.
 const SEASONAL_PATTERN_THRESHOLD = 0.40;
 
+// Number of complaints at a location required before the location is treated
+// with full scoring confidence. Below this threshold the raw composite score
+// is discounted by min(1.0, count / CONFIDENCE_THRESHOLD_COMPLAINTS).
+// Rationale: a single isolated complaint — even a high-severity one — provides
+// insufficient statistical evidence to rank a location alongside sites with
+// thousands of corroborated reports. 5 complaints is the point at which
+// the location has been reported independently enough to treat as reliable.
+// See computeConfidenceFactor() and METHODOLOGY.md Section 4.7.
+const CONFIDENCE_THRESHOLD_COMPLAINTS = 5;
+
 // Minimum number of complaints required to attempt seasonal pattern detection.
 // Below 3 complaints, any single-quarter dominance is not meaningful.
 const MIN_COMPLAINTS_FOR_PATTERN = 3;
@@ -392,6 +402,36 @@ function computeSeasonalPattern(complaints) {
 }
 
 /**
+ * Computes the confidence factor for a location based on its complaint count.
+ *
+ * Discounts locations with very few complaints to reflect lower statistical
+ * reliability, not lower severity. A single high-severity complaint (e.g., a
+ * sinkhole) at a sparse outer Nashville grid point should not score comparably
+ * to a location with thousands of corroborated complaints simply because its
+ * severity weight is high. This modifier requires a minimum level of
+ * corroboration before treating a location's score as fully reliable.
+ *
+ * Locations with 5+ complaints receive no penalty (factor = 1.0).
+ * This is NOT a minimum threshold filter — the location still scores and
+ * appears in the priority queue; its score is appropriately discounted.
+ *
+ * Formula: min(1.0, complaint_count / CONFIDENCE_THRESHOLD_COMPLAINTS)
+ *   1 complaint  → 0.20 multiplier
+ *   2 complaints → 0.40 multiplier
+ *   3 complaints → 0.60 multiplier
+ *   4 complaints → 0.80 multiplier
+ *   5+ complaints → 1.0 multiplier (no penalty)
+ *
+ * See METHODOLOGY.md Section 4.7 for full rationale.
+ *
+ * @param {number} complaintCount
+ * @returns {number} - Confidence factor in (0, 1]
+ */
+function computeConfidenceFactor(complaintCount) {
+  return Math.min(1.0, complaintCount / CONFIDENCE_THRESHOLD_COMPLAINTS);
+}
+
+/**
  * Orchestrates all four sub-score functions and assembles the complete
  * recurrence score result object.
  *
@@ -421,13 +461,18 @@ function computeRecurrenceScore(complaints, maxComplaintCount) {
   const severity_score = computeSeverityScore(safeComplaints);
   const resolution_score = computeResolutionScore(safeComplaints);
 
-  const raw =
+  const rawScore =
     frequency_score * 0.40 +
     recency_score   * 0.30 +
     severity_score  * 0.20 +
     resolution_score * 0.10;
 
-  const recurrence_score = round4(clamp01(raw));
+  // Confidence factor discounts locations with insufficient corroboration.
+  // Preserving raw_score separately allows sensitivity analysis comparing
+  // pre- and post-confidence rankings. See METHODOLOGY.md Section 4.7.
+  const confidence_factor = computeConfidenceFactor(count);
+  const raw_score         = round4(clamp01(rawScore));
+  const recurrence_score  = round4(clamp01(rawScore * confidence_factor));
 
   // Date range — used in historical context and for display
   let minTs = Infinity;
@@ -448,7 +493,9 @@ function computeRecurrenceScore(complaints, maxComplaintCount) {
   const seasonal_pattern      = computeSeasonalPattern(safeComplaints);
 
   return {
-    recurrence_score,
+    recurrence_score,              // confidence-adjusted final score
+    raw_score,                     // pre-confidence formula output (kept for sensitivity analysis)
+    confidence_factor:  round4(confidence_factor),
     components: {
       frequency_score:  round4(frequency_score),
       recency_score:    round4(recency_score),
@@ -549,6 +596,7 @@ module.exports = {
   computeSeverityScore,
   computeResolutionScore,
   computeSeasonalPattern,
+  computeConfidenceFactor,
   computeRecurrenceScore,
   generateHistoricalContext,
   // Constants exported so other modules (compute-scores.js) can reference them
@@ -559,4 +607,5 @@ module.exports = {
   SEASONAL_PATTERN_THRESHOLD,
   MIN_COMPLAINTS_FOR_PATTERN,
   SCORING_RADIUS_METERS,
+  CONFIDENCE_THRESHOLD_COMPLAINTS,
 };

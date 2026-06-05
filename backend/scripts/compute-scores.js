@@ -184,6 +184,8 @@ async function main() {
   console.log(`Grid points evaluated:              ${gridPoints.length.toLocaleString()}`);
   console.log(`Grid points scored (≥1 complaint):  ${pointsWithComplaints.length.toLocaleString()}`);
   console.log(`Grid points skipped (0 complaints): ${pointsSkipped.toLocaleString()}`);
+  console.log(`Grid points confidence-discounted`);
+  console.log(`  (complaint_count < 5):            ${passTwoStats.confidenceDiscountedCount.toLocaleString()}`);
   console.log(`Failed batches:                     ${passTwoStats.failedBatches}`);
   console.log(`MAX_COMPLAINT_COUNT used:           ${maxComplaintCount}`);
   console.log(`Total runtime:                      ${elapsedMinutes} minutes`);
@@ -274,6 +276,7 @@ async function countComplaintsAtPoint(lat, lng) {
  */
 async function runPassTwo(points, maxComplaintCount) {
   let cacheEntriesWritten = 0;
+  let confidenceDiscountedCount = 0;
   let failedBatches = 0;
   let processedTotal = 0;
   const totalBatches = Math.ceil(points.length / BATCH_SIZE);
@@ -284,8 +287,9 @@ async function runPassTwo(points, maxComplaintCount) {
     batchIndex++;
 
     try {
-      const written = await scoreAndCacheBatch(batch, maxComplaintCount);
+      const { written, confidenceDiscounted } = await scoreAndCacheBatch(batch, maxComplaintCount);
       cacheEntriesWritten += written;
+      confidenceDiscountedCount += confidenceDiscounted;
     } catch (err) {
       failedBatches++;
       console.error(`[Pass 2] Batch ${batchIndex}/${totalBatches} failed: ${err.message}`);
@@ -307,7 +311,7 @@ async function runPassTwo(points, maxComplaintCount) {
     }
   }
 
-  return { cacheEntriesWritten, failedBatches };
+  return { cacheEntriesWritten, confidenceDiscountedCount, failedBatches };
 }
 
 /**
@@ -324,7 +328,11 @@ async function scoreAndCacheBatch(batch, maxComplaintCount) {
   );
 
   const validRows = cacheRows.filter((row) => row !== null);
-  if (validRows.length === 0) return 0;
+  if (validRows.length === 0) return { written: 0, confidenceDiscounted: 0 };
+
+  // Count points where confidence_factor < 1.0 — locations with fewer than
+  // CONFIDENCE_THRESHOLD_COMPLAINTS complaints that received a score discount.
+  const confidenceDiscounted = validRows.filter((row) => row.confidence_factor < 1.0).length;
 
   const { error } = await supabaseAdmin
     .from('recurrence_cache')
@@ -332,7 +340,7 @@ async function scoreAndCacheBatch(batch, maxComplaintCount) {
 
   if (error) throw new Error(`recurrence_cache upsert failed: ${error.message}`);
 
-  return validRows.length;
+  return { written: validRows.length, confidenceDiscounted };
 }
 
 /**
@@ -370,6 +378,8 @@ async function scorePoint(lat, lng, maxComplaintCount) {
     // EWKT format required by Supabase PostgREST for geography inserts.
     location:             `SRID=4326;POINT(${lng} ${lat})`,
     recurrence_score:     scoringResult.recurrence_score,
+    raw_score:            scoringResult.raw_score,
+    confidence_factor:    scoringResult.confidence_factor,
     frequency_score:      scoringResult.components.frequency_score,
     recency_score:        scoringResult.components.recency_score,
     severity_score:       scoringResult.components.severity_score,
