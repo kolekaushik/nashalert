@@ -83,6 +83,12 @@ nashalert/
 
 ---
 
+## Research Agenda
+
+NashAlert is a prototype, not a research contribution. The scoring weights are heuristic, the anomaly detection assumes normality, and the system has no model of how Nashville's complaint distribution shifts over time. A full statement of the PhD-level research questions this prototype motivates — including debiased observation modeling, POMDP-based maintenance allocation under partial observability, and online adaptation to non-stationary demand — is in [docs/RESEARCH_AGENDA.md](docs/RESEARCH_AGENDA.md).
+
+---
+
 ## Status
 
 The data foundation, scoring engine, backend API, and city planner dashboard are complete. Statistical anomaly detection, spatiotemporal KDE-based hotspot prediction, inspection routing optimization, and the mobile reporting app are actively in development. The equity analysis panel displays council district-level data but the full tract-level income join and regression analysis await completion of the Census ACS integration. This README will be expanded with research findings once the equity analysis and AI modules are complete.
