@@ -156,13 +156,13 @@ The severity score is the average severity weight of all complaints at the locat
 
 ### 4.4 Resolution Score (weight: 0.10)
 
-The resolution score is the inverse of the average resolution time for complaints at the location, normalized against the city-wide maximum average resolution time:
+The resolution score measures how long complaints at a location historically take to close, normalized against a fixed 730-day cap:
 
 ```
-resolution_score = 1 - (avg_resolution_days / max_avg_resolution_days_city_wide)
+resolution_score = avg_resolution_days / MAX_RESOLUTION_DAYS
 ```
 
-A higher resolution score indicates that complaints at this location have historically taken longer to resolve, which is an additional signal of systemic neglect. Resolution is given the lowest weight (10%) because resolution time data is inconsistently recorded in the Nashville 311 dataset — many complaints have null closed dates — and because slow resolution may reflect complaint complexity rather than neglect. It is included as a tiebreaker signal rather than a primary driver.
+A higher resolution score indicates that complaints at this location have historically taken longer to resolve, which is an additional signal of systemic neglect. The denominator uses a fixed cap of 730 days rather than the observed city-wide maximum to ensure score stability across cache reruns and prevent a single extreme-outlier location from compressing all other resolution scores. Resolution is given the lowest weight (10%) because resolution time data is inconsistently recorded in the Nashville 311 dataset — many complaints have null closed dates — and because slow resolution may reflect complaint complexity rather than neglect. It is included as a tiebreaker signal rather than a primary driver.
 
 **Defining "resolved" for resolution time calculation:** The Nashville 311 dataset contains 18 distinct status values with inconsistent casing and formatting — including `PENDING`, `In Progress`, `CityWorks In Progress`, and variants thereof. Rather than attempt to classify this taxonomy, the resolution time calculation uses a single unambiguous rule: a complaint is considered resolved only if its `status` field equals `"Closed"` **and** its `closed_date` is not null. All other rows — regardless of status label — are treated as unresolved and excluded from resolution time averaging. This rule is conservative: it will undercount resolved complaints, but it will not introduce spurious resolution times by inferring closure from ambiguous status strings.
 

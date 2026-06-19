@@ -285,11 +285,11 @@ function computeSeverityScore(complaints) {
  * where complaints historically take a long time to close warrant higher
  * priority. The score is:
  *
- *   resolution_score = 1 - (avgResolutionDays / MAX_RESOLUTION_DAYS)
+ *   resolution_score = avgResolutionDays / MAX_RESOLUTION_DAYS
  *
- * A location where complaints are closed in 10 days on average scores
- * close to 1.0 (fast resolution = higher score). A location where complaints
- * sit open for 2 years scores close to 0.0.
+ * A location where complaints sit open for 2 years scores close to 1.0
+ * (slow resolution = higher score, signaling systemic neglect). A location
+ * where complaints are closed in 10 days on average scores close to 0.0.
  *
  * Only complaints where status === "Closed" AND closed_date is not null are
  * included. All other rows — regardless of status label — are treated as
@@ -338,7 +338,7 @@ function computeResolutionScore(complaints) {
   }
 
   const avgDays = totalDays / resolved.length;
-  return clamp01(1 - avgDays / MAX_RESOLUTION_DAYS);
+  return clamp01(avgDays / MAX_RESOLUTION_DAYS);
 }
 
 /**
