@@ -148,3 +148,4 @@ coverage/
 # Project docs — maintained locally, not committed to Git
 # ------------------------------------------------------------
 docs/CHANGELOG.md
+docs/nashalert_2.tex

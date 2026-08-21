@@ -11,22 +11,28 @@ The Nashville 311 dataset contains complaints spanning a wide range of municipal
 
 **Exclusion criteria:** Complaints were excluded if they related to administrative or social services (permits, billing inquiries, mayor correspondence), waste collection scheduling (missed pickups, cart requests), quality-of-life issues without infrastructure failure (noise, graffiti, overgrowth), or internal Metro government workflows.
 
-The following Request Types were identified as infrastructure-relevant and form the basis of all scoring in this project:
+The following **16** Request Types were identified as infrastructure-relevant and form the basis of all scoring in this project. This list is the documentation counterpart to `INFRASTRUCTURE_REQUEST_TYPES` in `backend/constants/categories.js`; the two must be kept in sync, and the counts below are measured directly from the ingested `complaints` table rather than estimated from the source export.
 
-- **Streets, Roads & Sidewalks** — the largest infrastructure category with 252,182 complaints, covering road surface, traffic control, sidewalks, drainage, and right-of-way issues
-- **Electric & Water General** — 20,471 complaints covering water, sewer, stormwater, power, and drainage utility failures
-- **Public Works WO** — 44,800 complaints (after normalization, see Section 5) covering a broad range of public works issues overlapping with the above categories
-- **Pothole** — 7,168 complaints filed directly as pothole requests, treated as a dedicated road surface category
-- **Street Lighting** — 6,383 complaints covering streetlight outages, treated separately due to the safety implications of lighting failures
-- **Blocked Drain / Clogged Culvert & Cross Drains / Ditch Maintenance** — smaller but highly specific drainage categories totaling approximately 1,625 complaints
-- **Flooding** — 283 direct flooding complaints, treated as high-severity regardless of subtype
+- **Streets, Roads & Sidewalks** — the largest infrastructure category with 250,363 complaints, covering road surface, traffic control, sidewalks, drainage, and right-of-way issues
+- **Public Works WO** — 46,706 complaints (after normalization, see Section 5) covering a broad range of public works issues overlapping with the above categories
+- **Electric & Water General** — 18,785 complaints covering water, sewer, stormwater, power, and drainage utility failures
+- **Pothole** — 7,161 complaints filed directly as pothole requests, treated as a dedicated road surface category
+- **Street Lighting** — 6,379 complaints covering streetlight outages, treated separately due to the safety implications of lighting failures
+- **Power Lines Down or Low** — 1,852 complaints, treated as Tier 1 severity given the immediate electrocution and fire risk
+- **Blocked Drain** — 795 complaints; a precursor to flooding and an acute risk during rain events
+- **Traffic Light Issue** — 550 complaints filed directly as signal failures, separate from signal subtypes filed under the Streets category
+- **Remove debris in roadway** — 489 complaints, included where debris poses a direct road safety hazard
+- **Ditch Maintenance** — 414 complaints covering roadside drainage channel degradation
+- **Clogged Culvert & Cross Drains** — 413 complaints covering stormwater conveyance failures
+- **Flooding** — 282 direct flooding complaints, treated as high-severity regardless of subtype
 - **Repair Storm Drain** — 226 complaints for storm drain repair, included for stormwater infrastructure coverage
-- **Remove debris in roadway** — 491 complaints, included where debris poses a direct road safety hazard
+- **Snow and Ice Removal** — 179 complaints; included because untreated ice on road surfaces is a direct mobility and safety failure
 - **Sidewalks** — 111 direct sidewalk complaints filed separately from the Streets category
-- **Sinkhole** — 5 direct sinkhole complaints plus related subtypes in other categories; included at highest severity
-- **Snow and Ice Removal** — 183 complaints, included as a road safety category
-- **Traffic Light Issue** — 551 direct complaints, plus a large volume under Streets, Roads & Sidewalks
-- **Power Lines Down or Low** — 1,853 complaints, included as an immediate public safety hazard
+- **Sinkhole** — 5 complaints; retained despite negligible volume because a sinkhole carries the maximum severity weight and signals subsurface structural failure
+
+These 16 types account for all 334,710 ingested complaints — the itemized counts above sum exactly to the total, so no retained complaint falls outside this list. Four of them (Power Lines Down or Low, Traffic Light Issue, Snow and Ice Removal, Sinkhole) were added to the inclusion set after the initial ingestion pass.
+
+Note that several of these categories also exist as *subtypes* within the broader Streets, Roads & Sidewalks and Electric & Water General categories. A traffic signal failure, for example, may be filed either as a `Traffic Light Issue` request type or as a signal subtype under Streets. The counts above are for the request type only and do not aggregate the corresponding subtypes; severity weighting handles both filing paths, and Section 2 assigns matching weights across them so that the filing channel does not change a complaint's severity.
 
 ---
 
@@ -150,7 +156,7 @@ recency_weight(complaint) = e^(-λ * days_since_complaint)
 where λ = ln(2) / 365
 ```
 
-The 365-day half-life was chosen after evaluating 90-day and 180-day alternatives against the actual dataset. Both shorter half-lives produced recency scores of 0.02–0.05 across all test locations — effectively making recency a non-contributor to the final score despite carrying substantial formula weight (30% at the time of this evaluation), a clear misalignment between the formula's design intent and its practical behavior. A 365-day half-life produces recency scores in the 0.15–0.35 range for most locations, making it a genuine differentiator between locations with recent complaint activity and those with only historical records.
+The 365-day half-life was chosen after evaluating 90-day and 180-day alternatives against the actual dataset. Both shorter half-lives produced recency scores of 0.02–0.05 across all test locations — effectively making recency a non-contributor to the final score despite carrying substantial formula weight (30% at the time of this evaluation), a clear misalignment between the formula's design intent and its practical behavior. A 365-day half-life produces a recency distribution with a median of 0.129, a 10th percentile of 0.033, a 90th percentile of 0.242, and a maximum of 0.829 — making it a genuine differentiator between locations with recent complaint activity and those with only historical records. The earlier claim that this range was "0.15–0.35 for most locations" overstated the central tendency; the actual median sits below that band, and roughly 10% of scored locations still fall below 0.033, where recency remains close to inert. The property that justifies the 365-day choice is the spread — more than two orders of magnitude across scored points — not the absolute level.
 
 The 365-day value also has the strongest domain rationale of the three candidates: infrastructure degradation in Nashville follows seasonal and annual cycles. A pothole corridor that generates complaints every winter for three consecutive years represents a structural failure that a scoring system should recognize — not a one-time event whose signal should decay to near-zero within 90 days. A one-year half-life means complaints from the past 2–3 years carry meaningful weight, complaints from 3–5 years ago carry moderate weight, and complaints older than 5 years approach zero — a decay curve that reflects how infrastructure professionals actually reason about persistent maintenance problems.
 
@@ -221,7 +227,7 @@ A comparison of Nashville's top 15 locations by raw complaint volume versus recu
 | 4 | 4,578 | 0.3185 | 0.4610 | 23 |
 | 5 | 3,413 | 0.3120 | 0.4464 | 24 |
 
-This is a stronger version of the same finding reported under the original weighting (where the top 9 rankings were identical and divergence began at rank 10): lowering frequency's weight from 0.40 to 0.15 means the busiest single location in Nashville — 5,547 complaints, accumulated over years — no longer outranks a location with 8 recent, high-severity water-outage complaints. A city planner using naive complaint-count ranking would never examine a location with 8, 10, or 23 complaints; the recurrence score says exactly these locations should be examined first.
+This is a stronger version of the same finding reported under the original weighting (whose top 30 cells were still dominated by high-volume downtown locations — 14 of 30 carried at least 1,000 complaints): lowering frequency's weight from 0.40 to 0.15 means the busiest single location in Nashville — 5,547 complaints, accumulated over years — no longer outranks a location with 8 recent, high-severity water-outage complaints. A city planner using naive complaint-count ranking would never examine a location with 8, 10, or 23 complaints; the recurrence score says exactly these locations should be examined first.
 
 This divergence is the core empirical justification for the scoring methodology: locations with persistent, recent, high-severity utility failures in outer Nashville are systematically underrepresented in raw complaint volume but correctly elevated by the recurrence scoring engine. This finding is consistent with the broader emergency response management literature's characterization of frequency-based approaches: Mukhopadhyay et al. (2022) note that frequency analysis "neglects fluctuations in incident occurrence and requires a large volume of incident data to infer accurate characteristics" — a limitation directly observable in Nashville's outer-district complaint data.
 
@@ -239,7 +245,9 @@ Recurrence scores across Nashville's 30,979 scored grid points range from 0.0212
 
 Scores should be interpreted relative to each other and relative to this distribution, not against an absolute scale — a score of 0.30 is not "30% as bad as it could theoretically get," it is a location in the top 1% of Nashville by this formula's measure of recency-weighted, severity-weighted infrastructure concern. District-level filtering in the priority queue is recommended for identifying high-priority locations within specific neighborhoods. This percentile table is also the basis for the `generateHistoricalContext()` priority-message thresholds documented in Section 4.7 and in `backend/services/scoring.js`.
 
-**Comparison to the original 40/30/20/10 weighting:** under that formula, scores ranged from approximately 0.02 to 0.62 with the majority of locations in the 0.15–0.35 band, and the top 9 locations by volume and by score were identical. The revised formula compresses the top of the distribution (the single busiest location in the city drops from roughly 0.52 to 0.35) while *expanding* the effective range for sparse, severe, recent locations (the highest-scoring location in the city rises to 0.54, higher than the old formula's citywide maximum). Section 4.9 reports both weightings side by side and states plainly what each one does and does not surface; the claim that the revised weighting is *better* is deliberately not made there.
+**Comparison to the original 40/30/20/10 weighting:** recomputing the original weighting over the same cached sub-scores (Section 4.9) puts its highest-scoring cell at 0.523 — the 5,547-complaint downtown cell, which was also the highest-volume cell in the city. The top of that ranking was strongly volume-correlated: 14 of its top 30 cells carried at least 1,000 complaints. The revised formula compresses the top of the distribution (that same downtown cell drops from 0.523 to 0.347) while *expanding* the effective range for sparse, severe, recent locations (the highest-scoring location in the city rises to 0.540, above the original weighting's citywide maximum).
+
+An earlier version of this section reported the original weighting's range as "approximately 0.02 to 0.62, with the majority of locations in the 0.15–0.35 band," and stated that its top 9 locations by volume and by score were identical. The 0.62 figure is not reproducible from the current cache and is inconsistent with the 0.523 maximum reported in the Section 4.9 tables; both it and the exact top-9 claim are withdrawn in favor of the measured figures above. Section 4.9 reports both weightings side by side and states plainly what each one does and does not surface; the claim that the revised weighting is *better* is deliberately not made there.
 
 ### 4.9 Weight Sensitivity Analysis — Reporting Both Weightings
 
@@ -439,7 +447,7 @@ This analysis has several important limitations that must be acknowledged:
 
 **The dataset spans 2017–present.** Infrastructure conditions and demographic compositions of Nashville neighborhoods have changed over this period, particularly given Nashville's significant growth. The equity analysis treats the full period as a single snapshot, which may obscure temporal dynamics.
 
-**District 19 is a significant outlier.** With 40,910 complaints, District 19 has nearly three times the complaint volume of the next highest district (District 5 at 13,848). This is not a data artifact — District 19 covers a large geographic area and its concentration will appear prominently in heatmap visualizations. Any district-level equity comparison must account for this disparity, as raw complaint counts and recurrence scores for District 19 will not be directly comparable to those of geographically smaller districts. Census tract-level normalization by resident population partially addresses this, but the geographic scale difference remains a confound.
+**District 19 is a significant outlier.** With 40,910 complaints, District 19 has roughly 2.5 times the complaint volume of the next highest district (District 6 at 16,069, followed by District 17 at 15,289 and District 21 at 14,509). This is not a data artifact — District 19 covers a large geographic area and its concentration will appear prominently in heatmap visualizations. Any district-level equity comparison must account for this disparity, as raw complaint counts and recurrence scores for District 19 will not be directly comparable to those of geographically smaller districts. Census tract-level normalization by resident population partially addresses this, but the geographic scale difference remains a confound.
 
 **Current project implementation uses a static dataset.** The current implementation uses a static snapshot of Nashville 311 data ingested at project initialization. A production deployment would require a scheduled incremental sync job to keep the dataset current, which the existing upsert-based ingestion pipeline is designed to support with minimal modification.
 

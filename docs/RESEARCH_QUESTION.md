@@ -29,6 +29,8 @@ This project is organized around two related research questions, one operational
 
 The primary question is a systems and software question: does the scoring methodology produce prioritizations that are meaningfully different from, and arguably better than, a naive ranking by complaint count? It is evaluated by comparing the output of the recurrence scoring engine against a simple frequency ranking and examining where the two diverge — those divergences are the cases worth studying.
 
+Two qualifications on that evaluation, both learned during implementation and recorded here because they change what the comparison can show. First, *different* and *better* are separable, and only the first is testable with public data: establishing that the recurrence ranking is better would require ground-truth maintenance urgency records that Nashville does not publish. Second, any divergence measurement must be taken over deduplicated **places** rather than raw grid cells. Measured over cells, most of the apparent divergence turns out to be an artifact of one physical site occupying several adjacent cells rather than a real difference in which locations are surfaced (see [RESEARCH_FINDINGS.md](RESEARCH_FINDINGS.md) §3).
+
 The secondary question is an equity question: it requires joining 311 complaint data with U.S. Census tract-level median household income data for Nashville and testing whether the relationship between infrastructure stress (as measured by recurrence score) and report volume differs systematically by income level. The hypothesis, grounded in prior literature on civic participation and digital access, is that lower-income tracts will show higher recurrence scores per complaint — meaning they experience persistent infrastructure problems that are proportionally underreported relative to their severity.
 
 ---
@@ -71,4 +73,20 @@ The intended research trajectory beyond this project would explore whether the s
 
 ---
 
-*Document authored prior to project implementation as a research framing exercise. Last updated: project initialization.*
+## 6. Status of these questions as of this revision
+
+The framing above was written before implementation and is retained as written, because the motivation has not changed. What has changed is how much of each question is currently answerable. This section is the reconciliation.
+
+**The primary question is partially answered, and narrower than stated.** The question as posed asks about community-sourced reports "combined with" historical 311 data. The mobile reporting app is still in development, so no community-sourced reports exist yet, and every result to date rests on historical data alone. What has been tested is the scoring methodology; what has not been tested is whether adding real-time community reports improves prioritization over historical data by itself. That second half remains entirely open, and no claim about it should be read into current results.
+
+On the half that has been tested, the answer is affirmative but bounded: the recurrence ranking surfaces a substantially different set of locations than complaint volume, with the top 20 distinct sites having a median complaint count of 6, and this holds across every weight configuration tested rather than depending on a tuned parameter. It is a finding about divergence, not about correctness.
+
+**The secondary question is not answered.** The tract-level join between recurrence scores and Census ACS median household income is incomplete. Nothing in this repository supports any claim about how infrastructure burden distributes by income in Nashville. Section 4's discussion of what a meaningful finding would look like in either direction still stands as written, and remains prospective.
+
+**One anticipated difficulty has been confirmed as more serious than Section 4 implies.** Section 4 describes a null result as "also a meaningful finding," which is true but understates a problem. Because the recurrence score is computed from complaints, it carries the same reporting biases the equity question is testing for. A low score in a low-income tract may indicate sound infrastructure or residents who do not file complaints, and 311 data alone cannot separate these. A null result will therefore be genuinely ambiguous rather than evidence of equitable outcomes. This circularity was identified at design time, is documented in [METHODOLOGY.md](METHODOLOGY.md) §6.3, and has no resolution within the current data.
+
+**On the "most interesting finding" in Section 4.** Section 4 anticipates that the most valuable result would be locations with high recurrence scores and low complaint volume. The queue is now dominated by exactly that profile — median complaint count of 6 in the top 20 sites. The half of that prediction that cannot yet be evaluated is the part that matters most: whether those locations concentrate in lower-income tracts. That is the open question, and it is worth noting that a confidence-treatment defect documented in RESEARCH_FINDINGS.md §5 means some low-count entries may be noise rather than signal.
+
+---
+
+*Sections 1–5 were authored prior to project implementation as a research framing exercise and are preserved unrevised. Section 6 reconciles that framing with implementation results and is updated as analysis proceeds. Last updated: 2026-08-21.*
