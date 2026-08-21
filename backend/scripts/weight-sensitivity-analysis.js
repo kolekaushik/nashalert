@@ -343,7 +343,19 @@ async function main() {
   console.log('\n=============== END ===============');
 }
 
-main().catch((err) => {
-  console.error(`[Sensitivity Analysis] Failed: ${err.message}`);
-  process.exit(1);
-});
+// Exported so weight-sweep.js can reuse the loader and scoring helpers without
+// duplicating them. Guarded so that requiring this module does not run the report.
+module.exports = {
+  fetchAllCacheRows,
+  scoreUnder,
+  rankUnder,
+  haversineMeters,
+  WEIGHTINGS,
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[Sensitivity Analysis] Failed: ${err.message}`);
+    process.exit(1);
+  });
+}

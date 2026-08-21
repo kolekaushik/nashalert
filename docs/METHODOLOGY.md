@@ -247,27 +247,109 @@ Scores should be interpreted relative to each other and relative to this distrib
 
 The comparison is exact rather than approximate. `compute-scores.js` persists all four sub-scores per grid point, so both composites are re-derived from the *same* stored sub-scores by `backend/scripts/weight-sensitivity-analysis.js`. Complaint data, recency reference time, and confidence factors are held identical across both; the only variable is the weight vector. The script is rerunnable and its output is the source of every figure below.
 
-**Headline result: the two weightings are near-disjoint at the top of the queue.** They share only 8 of their top 20 locations and 16 of their top 30. More importantly, they disagree completely about *what kind of place* belongs at the top:
+#### 4.9.1 The apparent divergence is mostly a grid artifact, not a weight effect
 
-| | A — 40/30/20/10 | B — 15/40/35/10 |
+At the level of individual 200m **grid cells**, the two weightings look nearly disjoint: they share only 8 of their top 20 cells and 16 of their top 30. Weighting A's top 30 cells contain 14 locations with n ≥ 1,000 and are led by the 5,547-complaint downtown Broadway cell; weighting B's top 30 cells contain **zero** locations with n ≥ 1,000, with a median count of 5.
+
+That comparison is misleading, because a queue of cells is not a queue of places. Adjacent cells covering one real site each occupy their own slot, so a single location can consume many ranks (Section 4.9.3). Repeating the comparison over **deduplicated sites** — walking each ranking from the top and claiming a cell as a new site only if it is farther than 500m from every site already claimed — gives a very different answer:
+
+| | Cells | Deduplicated sites (500m) |
 |---|---|---|
-| Highest-ranked location | n=5,547 (downtown Broadway) | n=8 (southwest fringe) |
-| Complaint count, top 20 (min/median/max) | 4 / 2,495 / 5,547 | 4 / 5 / 24 |
-| Locations with n ≥ 1,000 in top 30 | 14 | 0 |
-| First fringe (low-n) entry | rank 8 | rank 1 |
-| First dense (n ≥ 1,000) entry | rank 1 | none in top 30 |
-| Citywide maximum score | 0.5228 | 0.5399 |
+| Shared in top 20 | 8 of 20 | **18 of 20** |
+| Shared in top 10 | — | **8 of 10** |
 
-**This is the central tradeoff, stated plainly.** Weighting A produces a volume-recurrence ranking: it surfaces the downtown corridor first and reaches outer-city utility failures at rank 8 and below. Weighting B produces a severity-recency ranking: it surfaces sparse, recent, high-severity utility failures first and does not include a single high-volume downtown location anywhere in its top 30 — the 5,547-complaint Broadway cell that ranked first under A appears nowhere near the top under B. Neither behavior is self-evidently correct, and the choice between them is a research design decision, not an empirical finding:
+The two weightings surface very nearly the **same set of places**, in a different order. The cell-level divergence was largely measuring grid fragmentation, not the weight vector. Section 4.9.2 reports how this figure varies with the deduplication radius, which it does substantially.
 
-- A city planner handed queue B would observe that the busiest corridor in Nashville is absent from the first thirty entries, which is a legitimate reason to distrust the tool regardless of the formula's internal logic.
-- A city planner handed queue A would observe a ranking that a simple complaint-count sort would largely reproduce at the top, which is precisely the redundancy this project argues against.
+**Deduplication rule.** Greedy spatial non-maximum suppression within a ranking: walk the ranked cells from the top and claim a cell as a new site only if it lies farther than the dedup radius from every site already claimed. Global clustering cannot be substituted here — the cache is a contiguous 200m grid, so single-link clustering of all cells at any radius ≥ 200m chains transitively and collapses the developed area into one blob. The representative point and complaint count reported for a site are those of its highest-scoring member cell under that weighting, not a sum over the site.
 
-The honest characterization is that these two weightings answer different questions, and the project's thesis — that volume-based prioritization misses severe, recent, outer-city infrastructure failures — is supported by the *existence of the divergence* between them, not by asserting that B's ordering is the true priority ordering. Reporting only B, and describing it as an improvement over A, would be claiming more than the data can support. A product that surfaced both orderings as distinct views would represent this uncertainty more faithfully than a single blended weight vector, and is the recommended direction (see Section 7).
+**Site-matching rule (how "the same site" is decided across two rankings).** Greedy one-to-one nearest-available matching within the match radius: for each site in ranking A, in rank order, scan ranking B's sites in rank order and claim the first not-yet-claimed site within the match radius; a claimed site cannot be matched again. Overlap is matches divided by k. The one-to-one constraint is load-bearing — without it, one site in B sitting near several of A's sites would count as the counterpart of each and inflate overlap. Matching is by proximity rather than exact coordinates because a different member cell of the same site may be top-ranked under a different weighting. The match radius tracks the dedup radius, which keeps the rule self-consistent: sites within a single ranking are by construction more than that distance apart, so a match is never ambiguous between two sites of the same ranking.
 
-**Two defects this analysis surfaced that are independent of the weight choice.** Both were present under the original weighting and are not caused by the revision; the revision changed how visible they are. Neither should be addressed by adjusting weights.
+**The two top-20 site lists in full** (dedup radius 500m; `n` is the representative cell's complaint count):
 
-*1. Grid-cell fragmentation — the queue is substantially redundant.* Adjacent 200m grid cells covering one real-world site each occupy their own queue slot, so a single location consumes multiple ranks. Single-link clustering of the top 30 at a 500m radius shows this is severe under both weightings, and *worse* under A:
+| Rank | A — score | A — n | A — representative | B — score | B — n | B — representative |
+|---|---|---|---|---|---|---|
+| 1 | 0.5228 | 5,547 | 36.1626, −86.7800 | 0.5399 | 8 | 36.0744, −86.8952 |
+| 2 | 0.3506 | 8 | 36.0744, −86.8952 | 0.4827 | 5 | 36.3372, −86.7962 |
+| 3 | 0.3372 | 2,765 | 36.1608, −86.7746 | 0.4610 | 23 | 36.2004, −86.9222 |
+| 4 | 0.3102 | 23 | 36.2004, −86.9222 | 0.4442 | 6 | 36.3372, −86.7890 |
+| 5 | 0.3030 | 5 | 36.3372, −86.7962 | 0.4442 | 4 | 36.2148, −86.9654 |
+| 6 | 0.2993 | 5 | 36.3282, −86.8844 | 0.4379 | 5 | 36.2832, −86.9384 |
+| 7 | 0.2960 | 4 | 36.2148, −86.9654 | 0.4278 | 5 | 36.3282, −86.8844 |
+| 8 | 0.2894 | 6 | 36.3372, −86.7890 | 0.4220 | 11 | 36.2040, −86.9294 |
+| 9 | 0.2791 | 11 | 36.2040, −86.9294 | 0.4139 | 10 | 36.0960, −86.8988 |
+| 10 | 0.2781 | 5 | 36.2832, −86.9384 | 0.4127 | 5 | 36.0582, −86.9798 |
+| 11 | 0.2748 | 5 | 36.0582, −86.9798 | 0.4106 | 5 | 36.0924, −86.7656 |
+| 12 | 0.2709 | 5 | 36.0708, −86.8160 | 0.4055 | 5 | 36.0690, −86.9816 |
+| 13 | 0.2672 | 10 | 36.0960, −86.8988 | 0.4049 | 5 | 36.0708, −86.8160 |
+| 14 | 0.2670 | 3 | 36.3804, −86.7782 | 0.3944 | 4 | 36.3822, −86.7782 |
+| 15 | 0.2640 | 5 | 36.0690, −86.9816 | 0.3935 | 6 | 36.3624, −86.7476 |
+| 16 | 0.2576 | 6 | 36.0546, −86.9960 | 0.3866 | 6 | 36.3246, −86.9222 |
+| 17 | 0.2564 | 6 | 36.3624, −86.7476 | 0.3860 | 6 | 36.1302, −86.8484 |
+| 18 | 0.2560 | 5 | 36.0924, −86.7656 | 0.3776 | 6 | 36.0546, −86.9960 |
+| 19 | 0.2549 | 6 | 36.1302, −86.8484 | 0.3742 | 9 | 36.3660, −86.7530 |
+| 20 | 0.2524 | 6 | 36.3246, −86.9222 | 0.3731 | 51 | 36.0096, −86.7044 |
+
+Complaint-count profile: A — min 3, **median 6**, max 5,547, two sites with n ≥ 1,000. B — min 4, **median 6**, max 51, zero sites with n ≥ 1,000. The two unmatched sites are A's two downtown entries (ranks 1 and 3); B's ranks 19–20 are the entries that take their place.
+
+The site-level view also undercuts the characterization of A as a "volume ranking." A's top 20 *sites* contain only **two** locations with n ≥ 1,000 (ranks 1 and 3); the other 18 have counts between 3 and 23, and the median count of A's top 20 sites is **6** — essentially the same as B's. Once grid duplication is removed, both weightings produce a queue dominated by sparse outer-city locations. Under A, fourteen of the top 30 cells were downtown, but they collapse to two sites; a reader scanning the cell list read them as "the busy corridor" rather than as two places repeated fourteen times.
+
+#### 4.9.2 Rank stability under weight perturbation
+
+`backend/scripts/weight-sweep.js` tests whether the ranking is actually sensitive to the weights, measured as top-k overlap over deduplicated sites. Two design choices matter: overlap is measured over the **top k** rather than as a full-list rank correlation, because a full-list Kendall's tau would be dominated by the highly compressed middle of the distribution (median 0.193, p75 0.217) which barely moves under any reweighting and which no user ever sees; and it is measured over **sites** rather than cells, so the metric is not hostage to a six-cell site reshuffling internally.
+
+**Local perturbations (each weight shifted ±0.05, others rescaled to preserve sum = 1):**
+
+| Anchor | k | Mean overlap | Worst case |
+|---|---|---|---|
+| A — 40/30/20/10 | 20 | 0.950 | 0.850 |
+| B — 15/40/35/10 | 20 | 0.938 | 0.850 |
+| A — 40/30/20/10 | 10 | 0.938 | 0.800 |
+| B — 15/40/35/10 | 10 | 0.938 | 0.800 |
+
+**Full interpolation path from A to B (20 steps):** overlap between adjacent steps never falls below 0.95 at k=20 (0.90 at k=10). There is no discontinuity anywhere along the path — no step reorders more than one site. Overlap against anchor A declines monotonically only from 1.00 to 0.90, and against anchor B rises from 0.90 to 1.00.
+
+**This result substantially weakens the strong form of the underdetermination claim, and it is reported as such.** The ranking is not knife-edge sensitive to the weights: small differences in judgment about the weight vector produce nearly identical queues, and even traversing the entire distance from a frequency-dominant to a severity-dominant configuration changes only 2 of the top 20 sites. A reader who suspected that the choice of 15/40/35/10 over 40/30/20/10 was doing the analytical work should conclude the opposite — over this range, it mostly is not.
+
+**Dedup radius sensitivity.** The dedup radius is a free parameter, and the site-level conclusions are stated in terms of it, so both findings were re-measured across radii from 150m to 2,000m (k=20):
+
+| Dedup radius | A vs B overlap | Local mean (A) | Local mean (B) | Dense sites in A's top 20 |
+|---|---|---|---|---|
+| 150m | 0.40 | 0.919 | 0.944 | 12 |
+| 250m | 0.65 | 0.919 | 0.950 | 7 |
+| 350m | 0.85 | 0.931 | 0.938 | 3 |
+| 500m | 0.90 | 0.950 | 0.938 | 2 |
+| 750m | 0.95 | 0.938 | 0.944 | 1 |
+| 1,000m | 0.90 | 0.956 | 0.931 | 1 |
+| 1,500m | 0.85 | 0.938 | 0.944 | 1 |
+| 2,000m | 0.85 | 0.938 | 0.931 | 1 |
+
+Two distinct conclusions, which must be stated separately because they behave differently:
+
+*Local stability is robust to the radius.* Mean perturbation overlap stays within 0.919–0.956 across the entire range, with worst cases between 0.800 and 0.900. The finding that the ranking is insensitive to small weight changes does not depend on the deduplication choice at all.
+
+*The A-vs-B similarity figure is strongly radius-dependent, and this is disclosed rather than glossed.* Overlap ranges from 0.40 at 150m to 0.95 at 750m. The 500m value used above (0.90) sits in the high-overlap regime, and 500m was chosen before this sensitivity was measured. The behavior at the extremes is interpretable rather than arbitrary:
+
+- At **150m** the radius is below the grid spacing (~200m in latitude, ~162m in longitude at this latitude), so essentially no merging occurs and the metric degenerates to the cell-level comparison. It returns 0.40 — exactly 8/20, reproducing the cell-level figure. This is a useful internal consistency check: it confirms the deduplication is the only thing separating the two measurements.
+- Overlap rises monotonically from 150m to 750m as merging becomes more aggressive, and dense sites in A's top 20 fall from 12 to 1 over the same range. That monotone relationship is the direct evidence for the claim in Section 4.9.1 that fragmentation generated most of the apparent divergence: the divergence disappears in proportion to how much duplication is removed.
+- Above 1,000m overlap declines mildly (0.85–0.90) because at that scale genuinely distinct locations are being merged, which changes the composition of the top 20 rather than cleaning it up.
+
+The defensible range is bounded below by the scoring radius. Each cell aggregates complaints within 200m (Section 5.6), so two cells less than ~400m apart draw on substantially overlapping complaint sets and are not independent observations; a dedup radius below that is not measuring distinct places. **At every radius in the defensible 350m–1,000m range, A-vs-B overlap is 0.85–0.95.** The conclusion therefore holds across that range, but a reader should understand it as conditional on treating a "place" as something on the order of a few hundred meters rather than a single grid cell.
+
+#### 4.9.3 What the weights do and do not control
+
+The weights control one thing robustly and monotonically: **whether the dense downtown core appears in the queue at all.** Along the A→B path, the number of top-20 sites with n ≥ 1,000 falls 2 → 1 → 0, crossing at roughly t=0.55 and t=0.95 (at k=10, at t=0.4 and t=0.8). This is a real effect and it is what makes weighting B's queue exclude the busiest corridor in Nashville — a legitimate reason for a city planner to distrust that queue, independent of the formula's internal logic.
+
+What the weights do **not** control, over the range tested, is which broader set of locations is surfaced: 18 of 20 sites are common to both endpoints. The honest summary is therefore narrower and stronger than the one this section previously made:
+
+- The claim "these two weightings answer different prioritization questions" is **overstated** and has been withdrawn. They answer nearly the same question and differ mainly in whether two downtown sites clear the top 20.
+- The project's actual thesis — that severity- and recency-weighted scoring surfaces infrastructure problems a volume ranking would miss — is **strengthened**, not weakened, by this result. Both weightings' top-20 sites have a median complaint count of 6, meaning locations that a complaint-volume sort would never reach dominate the queue across the *entire* weight range from frequency=0.40 down to frequency=0.15. That finding is robust to the weight choice rather than contingent on it, which is a considerably better position than resting the thesis on a weight vector that cannot be calibrated.
+- What remains genuinely unadjudicated is narrow and should be stated narrowly: whether the downtown corridor belongs at the top of a maintenance priority queue. That is a policy question about what prioritization is *for* — triaging the highest-traffic corridor versus the most acute unattended failure — and no amount of 311 data answers it.
+
+#### 4.9.4 Two defects independent of the weight choice
+
+Both were present under the original weighting and are not caused by the revision. Neither should be addressed by adjusting weights.
+
+*1. Grid-cell fragmentation — the queue ranks cells, not places.* This is now established as the **dominant** confound in this analysis, having accounted for most of the apparent A-vs-B divergence (Section 4.9.1). Single-link clustering of the top 30 cells at 500m:
 
 | | A — 40/30/20/10 | B — 15/40/35/10 |
 |---|---|---|
@@ -276,9 +358,11 @@ The honest characterization is that these two weightings answer different questi
 | Slots consumed by the 5 largest sites | 26 of 30 | 20 of 30 |
 | Largest single site | 14 slots (ranks 1–7, 9–12, 18, 23, 25) | 6 slots (ranks 3, 6, 14, 16, 20, 29) |
 
-Under A this redundancy was easy to miss because the 14 duplicated slots were all downtown cells, and a reader scanning the list would read them as "the busy corridor" rather than as one site repeated fourteen times. Under B the duplicated sites are scattered, which makes the fragmentation conspicuous — but the defect is strictly worse under A by every measure above. The fix is spatial deduplication (collapsing cells within a clustering radius into a single ranked entry with a representative point) applied before the queue is presented, which is a change to result presentation, not to scoring. This is logged as required future work; the queue's current top-N should be read as "top N grid cells," not "top N places."
+The defect is worse under A by every measure, and it was harder to see there for the reason given in Section 4.9.1. The fix is spatial deduplication before presentation — a change to result presentation, not to scoring — and on the evidence of Section 4.9.1 it is a substantially higher-value fix than any further weight adjustment. Until it is implemented, the queue's top-N must be read as "top N grid cells," not "top N places."
 
-*2. The confidence factor is being out-run rather than failing.* The multiplier `min(1, n/5)` is applied correctly, but because it is multiplicative it cannot gate a raw composite that rises faster than the discount shrinks it. Under B, two locations with n=3 reach ranks 26–27 with a pre-confidence raw composite of 0.6555 — which exceeds the entire citywide maximum under weighting A (0.5228) — and survive a 0.6 multiplier to land at 0.3933. Nine of B's top 30 locations sit below the n=5 corroboration threshold, versus five of A's. This is a structural limitation of expressing corroboration as a multiplier on a score whose achievable range depends on the weights: raising recency and severity weights raises what a single recent severe report can achieve pre-confidence, so the same multiplier gates less. A corroboration mechanism that does not scale with the weight vector — a hard floor on `n` for queue eligibility, a confidence interval on the score, or a Poisson-based lower-bound estimate rather than a point estimate discounted after the fact — would be a more robust design. This is a known limitation, not a solved problem.
+*2. The confidence factor is being out-run rather than failing.* The multiplier `min(1, n/5)` is applied correctly, but because it is multiplicative it cannot gate a raw composite that rises faster than the discount shrinks it. Under B, two locations with n=3 reach ranks 26–27 with a pre-confidence raw composite of 0.6555 — which exceeds the entire citywide maximum under weighting A (0.5228) — and survive a 0.6 multiplier to land at 0.3933. Nine of B's top 30 cells sit below the n=5 corroboration threshold, versus five of A's. This is a structural limitation of expressing corroboration as a multiplier on a score whose achievable range depends on the weights: raising recency and severity weights raises what a single recent severe report can achieve pre-confidence, so the same multiplier gates less. A corroboration mechanism that does not scale with the weight vector — a hard floor on `n` for queue eligibility, a confidence interval on the score, or a Poisson-based lower-bound estimate rather than a point estimate discounted after the fact — would be a more robust design. This is a known limitation, not a solved problem.
+
+**Scope of the sweep.** It covers the interpolation path between the two weightings actually used and ±0.05 perturbations around each, at k=10 and k=20, across dedup radii from 150m to 2,000m. It is not a sweep over the full weight simplex, so it cannot rule out instability in regions far from this path — for instance, configurations that weight resolution heavily, which no candidate design has proposed. The stability conclusion should be read as applying to the neighborhood of the configurations this project actually considered. Within that scope the two free parameters of the measurement itself (k and dedup radius) have both been varied, and the local-stability conclusion is insensitive to both; the A-vs-B similarity conclusion is insensitive to k but conditional on the dedup radius as documented in Section 4.9.2.
 
 ---
 
@@ -370,9 +454,11 @@ This project does not claim to provide a production-ready infrastructure managem
 
 **It does not claim that the recurrence scoring formula's weights are calibrated, optimal, or uniquely defensible.** This claim requires care, because an earlier version of this section asserted that the weights were "derived through principled reasoning rather than empirical calibration," which understated how the current values were actually arrived at. The full history is: the weights were specified a priori as 40/30/20/10 from design reasoning (Section 4.5); analysis then showed those stated weights did not describe the formula's actual behavior, because normalizing frequency against the citywide maximum collapsed its effective contribution to near-zero across most of the city (Section 4.1); the weights were revised to 15/40/35/10 in response to that finding. The revision was prompted by inspecting the formula's behavior and its ranked output. That is a legitimate way to discover a documentation-behavior mismatch, but it is not calibration, and it provides no evidence that 15/40/35/10 is correct — only that 40/30/20/10 was not describing what the system did.
 
-No ground-truth data on actual Nashville maintenance outcomes, repair urgency, or infrastructure condition is available to calibrate any weight vector against; that would require Metro internal work-order and asset-condition data not present in public datasets. Absent such data, the specific numeric values 15/40/35/10 should be read as one defensible configuration among several, not a result. Section 4.9 therefore reports both weightings side by side on identical data, documents that they share only 8 of their top 20 locations, and states what each surfaces and omits rather than designating one as correct. A reader asking "why 15/40/35/10 rather than some other vector?" should be given that section's answer — that the two configurations answer different prioritization questions and the divergence between them is the finding — rather than a claim of optimality that the available data cannot support.
+No ground-truth data on actual Nashville maintenance outcomes, repair urgency, or infrastructure condition is available to calibrate any weight vector against; that would require Metro internal work-order and asset-condition data not present in public datasets. Absent such data, the specific numeric values 15/40/35/10 should be read as one defensible configuration among several, not a result.
 
-What this project does claim is that the methodology is transparent, reproducible, and grounded in a defensible research rationale; that it produces meaningfully different prioritization outputs than naive complaint-count ranking — demonstrated empirically by the baseline comparison and sensitivity analysis in Sections 4.8 and 4.9, which show that severity- and recency-weighted scoring surfaces outer-Nashville utility infrastructure locations with 3–24 complaints that a volume-based ranking would never reach, while a volume-weighted configuration of the same formula surfaces the downtown corridor instead; and that it provides a tractable empirical framework for asking the equity question at the center of this project.
+**However, a weight-space sweep (Section 4.9.2) shows this matters far less than it appears to.** Measured as top-k overlap over deduplicated sites, the ranking is locally stable — ±0.05 perturbations to any weight preserve 0.94–0.95 mean overlap in the top 20 — and traversing the entire distance from 40/30/20/10 to 15/40/35/10 changes only 2 of the top 20 sites, with no discontinuity anywhere along the path. An earlier version of this section implied the weight choice was doing substantial analytical work and that the two configurations answered different questions. The sweep does not support that, and the claim has been withdrawn. The uncalibrated weights are a real limitation, but they are a limitation on one narrow question — whether the dense downtown corridor clears the top of the queue — rather than on which locations the system surfaces overall.
+
+What this project does claim is that the methodology is transparent, reproducible, and grounded in a defensible research rationale; that it produces meaningfully different prioritization outputs than naive complaint-count ranking — demonstrated by the baseline comparison and sweep in Sections 4.8 and 4.9, which show that the top 20 deduplicated sites have a median complaint count of 6 under *both* weightings tested, meaning the queue is dominated by locations a complaint-volume sort would never reach across the entire weight range examined rather than only under one favorable configuration; and that it provides a tractable empirical framework for asking the equity question at the center of this project.
 
 Two implementation limitations are load-bearing enough to restate here, both documented in Section 4.9 and both independent of the weight choice: the priority queue ranks 200m *grid cells* rather than deduplicated places, so a single site can occupy several consecutive ranks (under either weighting, the top 30 collapses to 9–15 distinct sites); and the confidence factor, being a multiplier, gates low-corroboration locations less effectively as the weights raise what a single severe recent report can score pre-confidence. Neither is fixed by adjusting weights, and no results from the priority queue should be read as a ranking of distinct physical locations until spatial deduplication is implemented.
 
