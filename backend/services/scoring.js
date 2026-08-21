@@ -5,14 +5,24 @@
  *
  * Implements the recurrence scoring formula documented in docs/METHODOLOGY.md Section 4:
  *
- *   recurrence_score = (frequency_score  * 0.40)
- *                    + (recency_score    * 0.30)
- *                    + (severity_score   * 0.20)
+ *   recurrence_score = (frequency_score  * 0.15)
+ *                    + (recency_score    * 0.40)
+ *                    + (severity_score   * 0.35)
  *                    + (resolution_score * 0.10)
  *
- * Weights reflect the research priority: recurrence over time (frequency + recency = 70%)
- * is more indicative of systemic infrastructure failure than any single complaint's
- * characteristics (severity + resolution = 30%).
+ * Weight history: an earlier version of this formula used 40/30/20/10, with frequency
+ * as the dominant term. That weighting was revised after empirical analysis showed
+ * frequency's normalization (count / citywide-max) causes its effective contribution to
+ * collapse to near-zero for the large majority of Nashville locations that are not among
+ * the highest-volume handful — meaning the stated 40% weight was nominal, not effective,
+ * for most of the dataset. Rather than re-engineering the normalization to force frequency's
+ * effective share upward (which would make the score more like the raw-volume ranking this
+ * project's thesis argues is inadequate — see METHODOLOGY.md Section 4.8), the weights
+ * themselves were revised downward for frequency and upward for recency/severity, so the
+ * stated weights honestly describe what the formula does: outside a small set of
+ * extreme-volume locations, this score is primarily a severity-and-recency measure, with
+ * complaint volume as a smaller, capped contributor. See METHODOLOGY.md Section 4.1 and
+ * docs/CHANGELOG.md Phase 2.7 for the full before/after analysis.
  *
  * See METHODOLOGY.md Sections 4.1–4.5 for full rationale of each component and weight.
  */
@@ -48,6 +58,111 @@ const DEFAULT_RESOLUTION_SCORE = 0.5;
 // to be declared the dominant seasonal period. 40% means a quarter must
 // account for more than 2 out of every 5 complaints.
 const SEASONAL_PATTERN_THRESHOLD = 0.40;
+
+// ---------------------------------------------------------------
+// Composite formula weights
+// ---------------------------------------------------------------
+//
+// recurrence_score = (frequency_score  * FREQUENCY_WEIGHT)
+//                  + (recency_score    * RECENCY_WEIGHT)
+//                  + (severity_score   * SEVERITY_WEIGHT)
+//                  + (resolution_score * RESOLUTION_WEIGHT)
+//
+// Revised from the original 40/30/20/10 split. Frequency's sub-score is
+// bounded to [0, 1] and reaches 1.0 only at the single busiest location in
+// the city; FREQUENCY_WEIGHT is therefore a hard ceiling on how much any one
+// location's score can be driven by raw complaint volume alone. It was
+// lowered from 0.40 because empirical analysis showed the original weight
+// caused two problems: (1) at moderate complaint counts (the large majority
+// of Nashville locations), frequency's effective contribution was near-zero,
+// making the composite behave as if frequency mattered far less than 40% for
+// most of the city; and (2) at the citywide-max location, frequency alone
+// accounted for roughly three-quarters of that location's score, making the
+// single highest-ranked result in the whole system close to a pure
+// volume proxy. Both problems point the same direction: frequency's nominal
+// weight was too high relative to what this project's own thesis argues
+// (recurring severity and recency, not raw volume, should drive
+// prioritization — METHODOLOGY.md Section 4.8). Recency and severity absorb
+// the redistributed weight, in roughly the proportion they already carried
+// in practice. See METHODOLOGY.md Section 4.1 and 4.5, and CHANGELOG.md
+// Phase 2.7, for the full before/after numbers and reasoning.
+const FREQUENCY_WEIGHT = 0.15;
+const RECENCY_WEIGHT = 0.40;
+const SEVERITY_WEIGHT = 0.35;
+const RESOLUTION_WEIGHT = 0.10;
+
+// Exponent applied to the (complaintCount / maxComplaintCount) ratio when
+// computing the frequency sub-score. See computeFrequencyScore() and
+// METHODOLOGY.md Section 4.1 for the full rationale.
+//
+// Kept at 1.0 (plain linear ratio) deliberately. An earlier revision of this
+// file used a square-root exponent (0.5) to raise frequency's effective
+// contribution for moderate-volume locations, so that the formula's stated
+// 40% frequency weight would hold more uniformly across the city. That
+// approach was reverted: raising frequency's effective influence pulls the
+// composite score toward the raw-volume ranking this project's thesis
+// argues is inadequate (METHODOLOGY.md Section 4.8). Instead, the nominal
+// frequency WEIGHT was lowered (see the module-level formula comment above)
+// so that the stated weights honestly reflect the formula's real behavior,
+// rather than re-engineering the sub-score itself to chase a weight that no
+// longer applies. Do not reintroduce a normalization exponent without
+// updating this comment and METHODOLOGY.md Section 4.1 together.
+const FREQUENCY_NORMALIZATION_EXPONENT = 1.0;
+
+// ---------------------------------------------------------------
+// Historical-context priority thresholds (see generateHistoricalContext())
+// ---------------------------------------------------------------
+//
+// These thresholds classify a location as HIGH, MODERATE, or LOW priority for
+// the resident-facing historical context message. They are calibrated against
+// the actual recurrence_score distribution produced by the CURRENT formula
+// weights (Section 4.1/4.5 of METHODOLOGY.md) — not chosen a priori — because
+// this composite score is not on an absolute, formula-independent scale: its
+// achievable range depends on the weights. When those weights changed
+// (Phase 2.7, 40/30/20/10 → 15/40/35/10), the empirical range compressed
+// (citywide max dropped from ~0.52 to ~0.54 measured differently — see
+// CHANGELOG.md Phase 2.7) enough that the previous thresholds (0.70 / 0.50)
+// became unreachable by any real Nashville location, which would have
+// silently broken high-priority classification for exactly the locations
+// this feature exists to flag. These values were re-derived from a full
+// percentile analysis of all 30,979 scored grid points after the Phase 2.7
+// batch job run:
+//   p90 ≈ 0.240, p95 ≈ 0.257, p97 ≈ 0.269, p99 ≈ 0.301, p99.5 ≈ 0.321,
+//   max = 0.540 (min = 0.021, median = 0.193)
+// Any future change to FREQUENCY_WEIGHT / RECENCY_WEIGHT / SEVERITY_WEIGHT /
+// RESOLUTION_WEIGHT or to FREQUENCY_NORMALIZATION_EXPONENT should be
+// followed by re-running this percentile analysis and updating these
+// thresholds — they are not independent of the formula weights.
+
+// Score alone qualifies a location as high-priority above this value.
+// 0.30 sits just below the 99th percentile (≈ top 1% of scored locations
+// citywide) — a deliberately high bar so "high-priority" remains rare and
+// meaningful rather than a routine label.
+const HIGH_PRIORITY_SCORE_THRESHOLD = 0.30;
+
+// Below HIGH_PRIORITY_SCORE_THRESHOLD, a location is still treated as
+// high-priority if it has extreme complaint volume (HIGH_PRIORITY_VOLUME_
+// THRESHOLD or more) AND a score above this lower bar. This exists so a
+// location like downtown Nashville's busiest cluster (5,547+ complaints)
+// is never undersold merely because its severity/recency profile — spread
+// across years of aggregate history — pulls its score down relative to a
+// small, recent, acute-severity cluster. Empirically, every real Nashville
+// location with 1,000+ complaints already scores at or above 0.246 under
+// the current formula, so 0.20 is a deliberately generous floor that acts
+// as a safety net without being the binding constraint today.
+const HIGH_PRIORITY_VOLUME_SCORE_THRESHOLD = 0.20;
+
+// Minimum complaint count for the volume-based high-priority path above.
+const HIGH_PRIORITY_VOLUME_THRESHOLD = 1000;
+
+// Moderate-priority score threshold — roughly the 93rd percentile (top ~7%
+// of scored locations), paired with MODERATE_COUNT_THRESHOLD below.
+const MODERATE_SCORE_THRESHOLD = 0.25;
+
+// Minimum complaint count for the moderate-priority tier. Kept low relative
+// to the high-priority volume threshold because moderate priority is meant
+// to flag "worth watching," not "extensively corroborated."
+const MODERATE_COUNT_THRESHOLD = 10;
 
 // Number of complaints at a location required before the location is treated
 // with full scoring confidence. Below this threshold the raw composite score
@@ -168,13 +283,21 @@ function findDominantValue(complaints, field) {
 /**
  * Computes the frequency sub-score for a location.
  *
- * Formula: complaintCount / maxComplaintCount
+ * Formula: (complaintCount / maxComplaintCount) ^ FREQUENCY_NORMALIZATION_EXPONENT
+ * (the exponent is currently 1.0, i.e. a plain linear ratio — see the
+ * constant's own comment for why a square-root correction was tried and reverted)
  *
- * Frequency carries the highest weight (40%) because persistent complaint
- * volume is the strongest signal of systemic infrastructure failure.
  * A location reported ten times over three years is structurally more
- * problematic than one reported once last month, regardless of type.
- * See METHODOLOGY.md Section 4.1 for full rationale.
+ * problematic than one reported once last month, regardless of type — this
+ * is the intuition frequency is meant to capture. But its FREQUENCY_WEIGHT
+ * in the composite formula is deliberately modest (0.15, down from an
+ * original 0.40): normalizing by the citywide maximum means frequency's
+ * sub-score is near zero for the large majority of Nashville locations that
+ * are not among the highest-volume handful, so a low weight keeps the
+ * formula's stated behavior honest rather than overstating frequency's
+ * real influence. See METHODOLOGY.md Section 4.1 for the full rationale,
+ * including why the alternative (raising frequency's effective contribution
+ * to match a higher nominal weight) was tried first and rejected.
  *
  * maxComplaintCount is computed once during the nightly batch job — it is
  * the highest complaint count within 200m of any grid point across all of
@@ -188,7 +311,8 @@ function findDominantValue(complaints, field) {
 function computeFrequencyScore(complaintCount, maxComplaintCount) {
   if (!maxComplaintCount || maxComplaintCount === 0) return 0;
   if (!complaintCount || complaintCount === 0) return 0;
-  return clamp01(complaintCount / maxComplaintCount);
+  const ratio = clamp01(complaintCount / maxComplaintCount);
+  return clamp01(Math.pow(ratio, FREQUENCY_NORMALIZATION_EXPONENT));
 }
 
 /**
@@ -210,7 +334,8 @@ function computeFrequencyScore(complaintCount, maxComplaintCount) {
  * in lower-income neighborhoods, which is important for the equity analysis.
  * 90-day and 180-day half-lives were evaluated and rejected: both produced
  * recency scores of 0.02–0.05 across all test locations, making recency
- * a statistical non-contributor despite carrying 30% formula weight.
+ * a statistical non-contributor despite carrying substantial formula weight
+ * (30% at the time of this evaluation; see RECENCY_WEIGHT for the current value).
  *
  * The score is the mean decay weight across all complaints (including those
  * with null dates, which receive weight 0). Dividing by complaint count
@@ -218,9 +343,17 @@ function computeFrequencyScore(complaintCount, maxComplaintCount) {
  * a location where every complaint was filed today scores close to 1.0;
  * a location where every complaint was filed years ago scores close to 0.
  *
- * Recency is weighted at 30% — significant but secondary to frequency,
- * so a single very recent complaint cannot outrank a location with years
- * of persistent history. See METHODOLOGY.md Section 4.2.
+ * Recency now carries the largest formula weight (RECENCY_WEIGHT = 0.40,
+ * revised upward from an original 0.30 — see METHODOLOGY.md Section 4.5 and
+ * CHANGELOG.md Phase 2.7), reflecting that a location's real-world urgency
+ * is driven more by how recently and severely it has been reported than by
+ * raw complaint volume, which is normalized against a citywide maximum and
+ * therefore only meaningfully differentiates the handful of highest-volume
+ * locations. This score is nonetheless computed relative to complaint
+ * "now" at query time — see the recency drift note in METHODOLOGY.md
+ * Section 4.6 for why this can cause a cached score to differ slightly from
+ * a real-time recomputation of the same location after enough time passes.
+ * See METHODOLOGY.md Section 4.2 for full rationale.
  *
  * @param {Array<Object>} complaints - Complaints, each with an `opened_date` field
  * @returns {number}                 - Recency score in [0, 1]
@@ -251,13 +384,14 @@ function computeRecencyScore(complaints) {
  * backend/constants/severity-weights.js using both its request_type and
  * subtype. The score is the mean severity weight across all complaints.
  *
- * Severity is weighted at only 20% because the project's core goal is to
- * surface persistently problematic locations, not to rank by complaint type.
- * A location with ten moderate-severity complaints is of greater maintenance
- * concern than a location with one high-severity complaint that was resolved.
- * Severity nonetheless provides a meaningful tiebreaker: two equally frequent
- * locations should be differentiated by the nature of their failures.
- * See METHODOLOGY.md Section 4.3.
+ * Severity now carries substantial formula weight (SEVERITY_WEIGHT = 0.35,
+ * revised upward from an original 0.20 — see METHODOLOGY.md Section 4.5 and
+ * CHANGELOG.md Phase 2.7). A location with ten moderate-severity complaints
+ * can still be of greater maintenance concern than a location with one
+ * high-severity complaint, but severity is no longer a minor tiebreaker: it
+ * is one of the two dominant signals (alongside recency) for the large
+ * majority of Nashville locations whose frequency sub-score is small
+ * relative to the citywide maximum. See METHODOLOGY.md Section 4.3.
  *
  * If the complaints array is empty, the DEFAULT_SEVERITY fallback (0.3) is
  * returned. This prevents the scoring formula from collapsing to zero on
@@ -436,10 +570,10 @@ function computeConfidenceFactor(complaintCount) {
  * recurrence score result object.
  *
  * Applies the weighted formula:
- *   recurrence_score = (frequency_score * 0.40)
- *                    + (recency_score   * 0.30)
- *                    + (severity_score  * 0.20)
- *                    + (resolution_score * 0.10)
+ *   recurrence_score = (frequency_score * FREQUENCY_WEIGHT)
+ *                    + (recency_score   * RECENCY_WEIGHT)
+ *                    + (severity_score  * SEVERITY_WEIGHT)
+ *                    + (resolution_score * RESOLUTION_WEIGHT)
  *
  * This is the function called by:
  *   1. The nightly batch job (compute-scores.js) — for every Nashville grid point
@@ -462,10 +596,10 @@ function computeRecurrenceScore(complaints, maxComplaintCount) {
   const resolution_score = computeResolutionScore(safeComplaints);
 
   const rawScore =
-    frequency_score * 0.40 +
-    recency_score   * 0.30 +
-    severity_score  * 0.20 +
-    resolution_score * 0.10;
+    frequency_score  * FREQUENCY_WEIGHT +
+    recency_score    * RECENCY_WEIGHT +
+    severity_score   * SEVERITY_WEIGHT +
+    resolution_score * RESOLUTION_WEIGHT;
 
   // Confidence factor discounts locations with insufficient corroboration.
   // Preserving raw_score separately allows sensitivity analysis comparing
@@ -520,16 +654,22 @@ function computeRecurrenceScore(complaints, maxComplaintCount) {
  * how serious that history is.
  *
  * Case logic combines recurrence score AND complaint count so that high-volume
- * locations are never undersold. A location with 5,000+ complaints and a score
- * of 0.59 is unambiguously a serious infrastructure concern — labeling it
- * "moderate" because its composite score falls below 0.70 misrepresents the
- * real-world situation to the resident reading the screen.
+ * locations are never undersold. A location with 5,000+ complaints is
+ * unambiguously a serious infrastructure concern regardless of exactly where
+ * its composite score falls — labeling it "moderate" would misrepresent the
+ * real-world situation to the resident reading the screen. See the
+ * HIGH_PRIORITY_* / MODERATE_* threshold constants above computeConfidenceFactor()
+ * for how these specific cutoffs were derived from the actual score
+ * distribution, and why they must be re-derived if the formula weights change.
  *
  *   - 0 complaints:   straightforward "no history on record" message
  *   - 1–2 complaints: acknowledge the history but note insufficient data
- *   - 3+, HIGH:       score >= 0.70 (strong score regardless of count), OR
- *                     score >= 0.50 AND count >= 1000 (high-volume, high-score)
- *   - 3+, MODERATE:   score >= 0.40 AND count >= 10, not already HIGH
+ *   - 3+, HIGH:       score >= HIGH_PRIORITY_SCORE_THRESHOLD (strong score
+ *                     regardless of count), OR score >= HIGH_PRIORITY_VOLUME_
+ *                     SCORE_THRESHOLD AND count >= HIGH_PRIORITY_VOLUME_THRESHOLD
+ *                     (high-volume, meaningful-score safety net)
+ *   - 3+, MODERATE:   score >= MODERATE_SCORE_THRESHOLD AND count >=
+ *                     MODERATE_COUNT_THRESHOLD, not already HIGH
  *   - 3+, LOW:        everything else
  *
  * @param {Object} scoringResult  - Result from computeRecurrenceScore()
@@ -562,11 +702,14 @@ function generateHistoricalContext(scoringResult, radiusMeters = SCORING_RADIUS_
     : 'recent years';
 
   // High-priority: strong score alone, OR high volume paired with a meaningful score.
-  // The second condition catches locations like Downtown Nashville (5,177 complaints,
-  // score 0.59) that score just below 0.70 but are unambiguously serious concerns.
+  // The second condition catches locations like downtown Nashville's busiest
+  // clusters (5,000+ complaints) that are unambiguously serious concerns even
+  // when their score falls short of the score-alone bar. See the threshold
+  // constants above for how these specific values were derived.
   const isHighPriority =
-    recurrence_score >= 0.70 ||
-    (recurrence_score >= 0.50 && complaint_count >= 1000);
+    recurrence_score >= HIGH_PRIORITY_SCORE_THRESHOLD ||
+    (recurrence_score >= HIGH_PRIORITY_VOLUME_SCORE_THRESHOLD &&
+      complaint_count >= HIGH_PRIORITY_VOLUME_THRESHOLD);
 
   if (isHighPriority) {
     const seasonNote =
@@ -579,7 +722,7 @@ function generateHistoricalContext(scoringResult, radiusMeters = SCORING_RADIUS_
   // Moderate: meaningful score with at least a handful of complaints.
   // "recurring complaint history" describes the pattern a resident can act on;
   // "moderate complaint history" described a score tier, which is less meaningful.
-  if (recurrence_score >= 0.40 && complaint_count >= 10) {
+  if (recurrence_score >= MODERATE_SCORE_THRESHOLD && complaint_count >= MODERATE_COUNT_THRESHOLD) {
     const seasonNote =
       seasonal_pattern !== 'year-round' && seasonal_pattern !== 'insufficient data'
         ? `, tending to spike in ${seasonal_pattern}`
@@ -608,4 +751,14 @@ module.exports = {
   MIN_COMPLAINTS_FOR_PATTERN,
   SCORING_RADIUS_METERS,
   CONFIDENCE_THRESHOLD_COMPLAINTS,
+  FREQUENCY_NORMALIZATION_EXPONENT,
+  FREQUENCY_WEIGHT,
+  RECENCY_WEIGHT,
+  SEVERITY_WEIGHT,
+  RESOLUTION_WEIGHT,
+  HIGH_PRIORITY_SCORE_THRESHOLD,
+  HIGH_PRIORITY_VOLUME_SCORE_THRESHOLD,
+  HIGH_PRIORITY_VOLUME_THRESHOLD,
+  MODERATE_SCORE_THRESHOLD,
+  MODERATE_COUNT_THRESHOLD,
 };

@@ -97,8 +97,14 @@ export default function FilterControls({ filters, stats, onChange }: FilterContr
           <input
             type="range"
             min={0}
-            max={0.9}
-            step={0.05}
+            // Max and step are calibrated to the current formula's real score
+            // range (recurrence_cache citywide max ≈ 0.54 as of the Phase 2.7
+            // weight revision — see METHODOLOGY.md Section 4.8). A max of 0.9
+            // left most of the slider as dead space where every location was
+            // filtered out; 0.6 keeps a small margin above the observed max
+            // without wasting most of the control's range.
+            max={0.6}
+            step={0.02}
             value={filters.minScore}
             onChange={(e) => onChange({ minScore: parseFloat(e.target.value) })}
             className="w-full h-1.5 rounded appearance-none cursor-pointer"

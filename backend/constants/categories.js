@@ -24,6 +24,10 @@
  * Note: 'public works wo' covers both the original 'Public Works WO' spelling
  * and 'Public_Works_WO' (underscore variant), which is normalized to
  * 'Public Works WO' before this lookup is performed.
+ * 
+ * The list is a good starting point for now but in future we need to bulletproof our 
+ * isInfrastructureRelevant function, either through logic or LLM if the request types are not clear
+ * or if the request type name or string changes.
  */
 const INFRASTRUCTURE_REQUEST_TYPES = new Set([
   'streets, roads & sidewalks',

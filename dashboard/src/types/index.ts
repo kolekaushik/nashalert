@@ -67,9 +67,20 @@ export interface DashboardStats {
 export type SeasonalPattern = 'spring' | 'summer' | 'fall' | 'winter' | 'year-round' | 'insufficient data';
 export type ScoreTier = 'high' | 'moderate' | 'low';
 
+// These thresholds must stay in sync with the backend's HIGH_PRIORITY_* /
+// MODERATE_* constants in backend/services/scoring.js. They are calibrated
+// against the actual recurrence_score distribution produced by the current
+// formula weights (METHODOLOGY.md Section 4.1/4.5/4.8), not chosen a priori:
+// after the Phase 2.7 weight revision (40/30/20/10 → 15/40/35/10), the
+// citywide score distribution compressed enough that the previous
+// thresholds (0.70 / 0.50) became unreachable by any real Nashville
+// location — which would have made every dashboard entry render as "low"
+// (green) regardless of actual severity. Re-derive these values (and the
+// map color/heatmap breakpoints in NashvilleMap.tsx) from a fresh percentile
+// analysis of recurrence_cache any time the backend formula weights change.
 export function getScoreTier(score: number, count: number): ScoreTier {
-  if (score >= 0.70 || (score >= 0.50 && count >= 1000)) return 'high';
-  if (score >= 0.40 && count >= 10) return 'moderate';
+  if (score >= 0.30 || (score >= 0.20 && count >= 1000)) return 'high';
+  if (score >= 0.25 && count >= 10) return 'moderate';
   return 'low';
 }
 

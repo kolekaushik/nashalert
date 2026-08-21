@@ -98,19 +98,42 @@ export default function NashvilleMap({
         source: 'nashalert-scores',
         maxzoom: 17,
         paint: {
+          // Breakpoints are calibrated to the current formula's real score
+          // distribution (p25 ≈0.14, p50 ≈0.19, p90 ≈0.24, p97 ≈0.27,
+          // p99 ≈0.30, p99.9 ≈0.39, max ≈0.54 — see METHODOLOGY.md Section 4.8).
+          //
+          // Why weight is near-zero up through the median: Mapbox's heatmap
+          // renders *density*, not each point's score in isolation — every
+          // pixel sums the weighted contributions of every nearby point
+          // within heatmap-radius. Because the cache has near-total spatial
+          // coverage (~31k points, ~170m apart, versus a multi-hundred-meter
+          // radius), a single pixel can sum 100+ overlapping points. Under
+          // the Phase 2.7 weights, 73% of all points score >=0.15 and 53%
+          // score >=0.19 (the recency/severity-dominant formula makes most
+          // locations look "moderately bad" rather than a few standing out).
+          // Giving that broad middle band any material weight means their
+          // sheer number saturates the summed density to its max almost
+          // everywhere, painting the whole city orange regardless of any
+          // individual area's real standing. Suppressing weight below p90
+          // and concentrating it in the p97–p99.9 range means density only
+          // builds up where genuinely elevated scores cluster together,
+          // not wherever data merely exists. Re-derive these breakpoints
+          // from a fresh percentile analysis of recurrence_cache any time
+          // the backend formula weights change (see backend/services/scoring.js).
           'heatmap-weight': [
             'interpolate', ['exponential', 2], ['get', 'recurrence_score'],
             0,    0,
-            0.30, 0.1,
-            0.50, 0.3,
-            0.60, 0.7,
-            0.70, 1.0,
+            0.19, 0.02,
+            0.24, 0.12,
+            0.27, 0.35,
+            0.30, 0.70,
+            0.39, 1.0,
           ],
           'heatmap-intensity': [
             'interpolate', ['linear'], ['zoom'],
-            9,  0.4,
-            11, 0.8,
-            13, 1.5,
+            9,  0.3,
+            11, 0.5,
+            13, 0.9,
           ],
           // Color ramp: green (low) → yellow (medium) → orange (high)
           'heatmap-color': [
@@ -147,12 +170,18 @@ export default function NashvilleMap({
             13, 5,
             16, 10,
           ],
+          // Same recalibration rationale as heatmap-weight above. Breakpoints
+          // (0.25 yellow, 0.30 orange) match the dashboard's getScoreTier()
+          // moderate/high thresholds in src/types/index.ts, which in turn
+          // mirror backend/services/scoring.js's MODERATE_SCORE_THRESHOLD and
+          // HIGH_PRIORITY_SCORE_THRESHOLD, so a point's color on the map
+          // agrees with its tier color in the priority queue list.
           'circle-color': [
             'interpolate', ['linear'], ['get', 'recurrence_score'],
-            0,   '#22c55e',
-            0.4, '#eab308',
-            0.7, '#f97316',
-            1,   '#f97316',
+            0,    '#22c55e',
+            0.25, '#eab308',
+            0.30, '#f97316',
+            0.54, '#f97316',
           ],
           'circle-opacity': 0.9,
           'circle-stroke-color': '#0f1117',

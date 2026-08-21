@@ -11,17 +11,14 @@ const { getCacheStatus } = require('./services/cache');
 
 const app = express();
 
-// Allow the Vite dev server (localhost:5173) and any Vercel preview URLs to
-// call the API without CORS errors. In production, restrict this to the real
-// dashboard origin.
+// Allow the Vite dev server (any localhost/127.0.0.1 port, since Vite falls back
+// to 5174/5175/etc. when 5173 is already taken by another project) and any
+// Vercel preview URLs to call the API without CORS errors. In production,
+// restrict this to the real dashboard origin.
+const LOCALHOST_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/;
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  const allowed = [
-    'http://localhost:5173',
-    'http://localhost:4173',
-    'http://127.0.0.1:5173',
-  ];
-  if (!origin || allowed.includes(origin) || (origin && origin.endsWith('.vercel.app'))) {
+  if (!origin || LOCALHOST_ORIGIN_RE.test(origin) || origin.endsWith('.vercel.app')) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
